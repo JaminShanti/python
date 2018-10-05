@@ -5,6 +5,8 @@ import yagmail
 import datetime
 from tabulate import tabulate
 import html2text
+from fbchat import Client
+from fbchat.models import *
 
 email_title_default = 'Checking up with you.'
 
@@ -92,6 +94,7 @@ class ContactBot(object):
         recipient = row['email_address'].encode("utf-8")
         specialty = row['specialty'].encode("utf-8")
         contact_type = self.cfg['contact_types'][row['contact_type']]
+        facebook_id = row['facebook_id']
         if contact_type['email_titles'].encode("utf-8") == '':
             email_title = email_title_default
         else:
@@ -107,10 +110,17 @@ class ContactBot(object):
         self.logprint("Email Subject: %s" % email_title, "DEBUG")
         self.logprint("Email Content: \n%s" %
                       html2text.html2text(html), "DEBUG")
-        yag = yagmail.SMTP(self.cfg['Email_Account'],
-                           self.cfg['Email_Password'])
-        yag.send(to=recipient,
-                 subject=email_title, contents=html)
+        if row['notification_type'] == 'email':
+            yag = yagmail.SMTP(self.cfg['Email_Account'],
+                               self.cfg['Email_Password'])
+            yag.send(to=recipient,
+                     subject=email_title, contents=html)
+        elif row['notification_type'] == 'facebook':
+            fclient = Client(self.cfg['Facebook_Account'],
+                             self.cfg['Facebook_Password'])
+            fclient.send(Message(text=html2text.html2text(html)),
+                         thread_id=facebook_id, thread_type=ThreadType.USER)
+            fclient.logout()
 
     def update_row(self, row):
         self.logprint("Reviewing Record: %s" % row['full_name'], "INFO")
