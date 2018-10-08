@@ -49,12 +49,20 @@ class ContactBot(object):
             print "Invalid choice, please try again."
             contact_type_choice = raw_input('Enter the contact type: ')
         contact_type = self.cfg['contact_types'][contact_type_choice]
+        for i in range(0, len(self.cfg['notification_type'])):
+            print self.cfg['notification_type'][i]
+        notification_type_choice = raw_input('Enter the notification type: ')
+        while notification_type_choice not in self.cfg['notification_type']:
+            print "Invalid choice, please try again."
+            notification_type_choice = raw_input('Enter the contact type: ')
+        contact_type = self.cfg['contact_types'][contact_type_choice]
         full_name = raw_input('Enter the Contact\'s Name: ')
         first_name, last_name = full_name.split(' ')
         email_address = raw_input(
             'Enter the Contact\'s Email Address: ')
         specialty = raw_input("What specialty for the %s? " %
                               contact_type_choice)
+        facebook_id = raw_input("What their facebook ID? ")
         while keep_adding:
             special_sentence = raw_input(
                 'Enter a Familiar Sentence, enter blank to end: ')
@@ -67,10 +75,13 @@ class ContactBot(object):
             sentence_list.append('  ')
         last_contact_date = None
         self.df = self.df.append({"full_name": full_name, "first_name": first_name,
-                                  "last_name": last_name, "contact_type": contact_type_choice, "specialty": specialty,
-                                  "email_address": email_address, "sentence_list": sentence_list,
-                                  "bother_bot_delay": self.bother_bot_delay, "last_contact_date": last_contact_date,
-                                  "email_template_type": contact_type['email_template']}, ignore_index=True)
+                                  "last_name": last_name, "contact_type": contact_type_choice,
+                                  "specialty": specialty, "email_address": email_address,
+                                  "sentence_list": sentence_list, "bother_bot_delay": self.bother_bot_delay,
+                                  "last_contact_date": last_contact_date,
+                                  "email_template_type": contact_type['email_template'],
+                                  "notification_type": notification_type_choice,
+                                  "facebook_id": facebook_id}, ignore_index=True)
 
     def display(self):
         print tabulate(self.df[['full_name', 'contact_type', 'specialty']], headers='keys', tablefmt='psql')
@@ -116,11 +127,12 @@ class ContactBot(object):
             yag.send(to=recipient,
                      subject=email_title, contents=html)
         elif row['notification_type'] == 'facebook':
-            fclient = Client(self.cfg['Facebook_Account'],
-                             self.cfg['Facebook_Password'])
-            fclient.send(Message(text=html2text.html2text(html)),
-                         thread_id=facebook_id, thread_type=ThreadType.USER)
-            fclient.logout()
+            self.logprint("New Feature not working on cloud, skipping...", "INFO")
+            #fclient = Client(self.cfg['Facebook_Account'],
+            #                 self.cfg['Facebook_Password'])
+            #fclient.send(Message(text=html2text.html2text(html)),
+            #             thread_id=facebook_id, thread_type=ThreadType.USER)
+            #fclient.logout()
 
     def update_row(self, row):
         self.logprint("Reviewing Record: %s" % row['full_name'], "INFO")
@@ -140,7 +152,7 @@ class ContactBot(object):
             row['last_contact_date'] = datetime.datetime.now().strftime("%B %d, %Y")
         else:
             self.logprint(
-                "Skipping Email based on bother_bot_delay...", "INFO")
+                "Skipping Contact based on bother_bot_delay...", "INFO")
         return row
 
     def run(self):
