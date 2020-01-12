@@ -35,13 +35,19 @@ for key, value in channels.items():
     new_row = {'channel_name': key, 'date': date, 'day_of_week': day_of_week, 'total_views_today': total_views_today}
     data = data.append(new_row, ignore_index=True)
 
-data = data.drop_duplicates()
-
+data = data.drop_duplicates(['channel_name','date'],keep='first')
 data.to_csv(csv_file_name, encoding='utf-8')
+data['date'] =  pd.to_datetime(data['date'])
 
 data = data.sort_values(by=['channel_name', 'date'])
 data['diff'] = data.groupby(['channel_name'])['total_views_today'].diff().fillna(0)
-data.set_index('date', inplace=True)
-data.groupby('channel_name')['diff'].plot(legend=True)
-plt.xticks(rotation=70)
+data = data.sort_values(by=['date','channel_name'])
+
+r = pd.date_range(start=data['date'].min(), end=data['date'].max())
+channels = data['channel_name'].unique()
+idx = pd.MultiIndex.from_product((r, channels), names=['date', 'channel_name'])
+data = data.set_index(['date', 'channel_name']).reindex(idx, fill_value=0).reset_index()
+
+data.set_index('date').groupby('channel_name')['diff'].plot(legend=True)
+plt.gcf().autofmt_xdate()
 plt.savefig("yt_output\yt_channel_compare_%s.png" % date)
