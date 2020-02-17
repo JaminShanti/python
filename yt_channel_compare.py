@@ -31,7 +31,7 @@ else:
     data = pd.DataFrame(columns=['channel_name', 'date', 'day_of_week', 'total_views_today'])
 
 for key, value in channels.items():
-    url = value
+    url = value['url']
     page = requests.get(url, headers={
         'User-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36'}).text
     viewCountText = json.loads(re.findall(r'\"viewCountText\":({.*views\"}]}),', page)[0])
@@ -50,19 +50,19 @@ data['diff'] = data.groupby(['channel_name'])['total_views_today'].diff().fillna
 data = data.sort_values(by=['date','channel_name'])
 
 r = pd.date_range(start=data['date'].min(), end=data['date'].max())
-channels = data['channel_name'].unique()
-idx = pd.MultiIndex.from_product((r, channels), names=['date', 'channel_name'])
+channel_names = data['channel_name'].unique()
+idx = pd.MultiIndex.from_product((r, channel_names), names=['date', 'channel_name'])
 data = data.set_index(['date', 'channel_name']).reindex(idx, fill_value=0).reset_index()
 data.set_index('date',inplace=True)
 data = data.loc[today - dt.timedelta(days=last_many_days):today]
 plt.style.use('dark_background')
 fig, ax = plt.subplots(figsize=(16, 5))
 for title, group in data.groupby('channel_name')['diff']:
-    ax.plot(group,label=title)
+    ax.plot(group, label=title, color=channels[title]['color'],linewidth=3.0)
 
 myFmt = mdates.DateFormatter('%m-%d')
 ax.xaxis.set_major_formatter(myFmt)
 ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
 fig.autofmt_xdate()
-plt.legend(bbox_to_anchor=(0.5, 1.10), ncol=4 , loc='upper center', borderaxespad=0.,fancybox=True, shadow=True)
-plt.savefig("yt_output\yt_channel_compare_%s.png" % date)
+plt.legend(bbox_to_anchor=(0.5, 1.30), ncol=4 , loc='upper center', borderaxespad=0.,fancybox=True, shadow=True, prop={"size":'xx-large'})
+plt.savefig("yt_output\yt_channel_compare_%s.png" % date,  bbox_inches='tight')
