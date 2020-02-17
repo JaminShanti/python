@@ -6,7 +6,7 @@ import re
 from wordcloud import WordCloud, STOPWORDS
 import matplotlib.pyplot as plt
 
-show_name = 'm/dolittle'
+show_name = 'm/sonic_the_hedgehog_2020'
 review_types = ['root.RottenTomatoes.context.movieReview', 'root.RottenTomatoes.context.seasonReviews']
 this_review_type = review_types[0]
 rotten_url = "https://www.rottentomatoes.com/%s/reviews?type=user" % show_name
@@ -23,7 +23,7 @@ else:
     show_id = movie_review_base['emsId']
     napi_type = 'tv/%s/season' % show_name
 
-csv_full_name = "%s_%s.csv" % (review_name, time.strftime("%Y%m%d-%H%M%S"))
+csv_full_name = "reviews_csv\\%s_%s.csv" % (review_name, time.strftime("%Y%m%d-%H%M%S"))
 reviews_base_url = "https://www.rottentomatoes.com/napi/%s/%s/reviews/user?direction=next&endCursor=%s&startCursor=%s" % (
     napi_type, show_id, movie_review_base['pageInfo']['endCursor'], movie_review_base['pageInfo']['startCursor'])
 
@@ -48,6 +48,9 @@ while page_info_and_reviews['pageInfo']['hasNextPage']:
 
 reviews.to_csv(csv_full_name, encoding='utf-8')
 
+reviews['rating'] = reviews['rating'].map(lambda x: x.lstrip('STAR_').replace('_','.'))
+reviews['rating'] = reviews['rating'].astype(float)
+average_review = round(reviews['rating'].mean(),1)
 stopwords = set(STOPWORDS)
 text = " ".join(review for review in reviews.review)
 wordcloud = WordCloud(width=800, height=400, stopwords=stopwords).generate(text)
@@ -57,3 +60,5 @@ plt.imshow(wordcloud)
 plt.axis("off")
 plt.tight_layout(pad=0)
 plt.savefig("rt_review_img\%s_%s.png" % (review_name, date))
+
+print("The Average review for %s is: %s" % (review_name,average_review))
