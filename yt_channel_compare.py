@@ -32,11 +32,17 @@ else:
 
 for key, value in channels.items():
     url = value['url']
+    print(url)
     page = requests.get(url, headers={
         'User-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.88 Safari/537.36'}).text
-    viewCountText = json.loads(re.findall(r'\"viewCountText\":({.*views\"}]}),', page)[0])
-    total_views_today = viewCountText['runs'][0]['text']
-    total_views_today = int(total_views_today.replace(',', ''))
+    try:
+        viewCountText = json.loads(re.findall(r'\"viewCountText\":({\"simpleText":\".* views\"}),', page)[0])
+        total_views_today = viewCountText['simpleText'].replace(' views','')
+        total_views_today = int(total_views_today.replace(',', ''))
+    except:
+        viewCountText = json.loads(re.findall(r'\"viewCountText\":({.*views\"}]}),', page)[0])
+        total_views_today = viewCountText['runs'][0]['text']
+        total_views_today = int(total_views_today.replace(',', ''))
     print('the total views for %s today are: %s' % (key, total_views_today))
     new_row = {'channel_name': key, 'date': date, 'day_of_week': day_of_week, 'total_views_today': total_views_today}
     data = data.append(new_row, ignore_index=True)
