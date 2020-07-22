@@ -142,7 +142,8 @@ market_panda.iloc[[0]]
 # In[ ]:
 
 
-market_panda = market_panda.drop('SSI')
+if 'SSI' in market_panda.index:
+    market_panda = market_panda.drop('SSI')
 
 
 # In[ ]:
