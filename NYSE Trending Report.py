@@ -47,7 +47,7 @@ symbols = list(snp500.symbol)
 symbols = [re.sub("\.","-",x) for x in symbols]
 
 
-# In[ ]:
+# In[4]:
 
 
 market_list = []
@@ -78,39 +78,45 @@ market_list = pd.DataFrame(market_list)
 market_list.set_index('symbol',inplace=True)
 
 
-# In[ ]:
+# In[5]:
 
 
 market_list
 
 
-# In[ ]:
+# In[6]:
 
 
 market_list.info()
 
 
-# In[ ]:
+# In[7]:
 
 
 for key, value in error_list.items():
     print(key,value)
 
 
-# In[ ]:
+# In[8]:
 
 
 top_25 = market_list.nlargest(25, ['stock_change_percentage']) 
 #top_50 = {key: market_list[key] for key in sorted(market_list, key=market_list.get, reverse=True)[:25]}
 
 
-# In[ ]:
+# In[9]:
 
 
 top_25.head()
 
 
-# In[ ]:
+# In[10]:
+
+
+top_25.count()
+
+
+# In[11]:
 
 
 top_info_list = []
@@ -124,7 +130,7 @@ for symbol, row in tqdm(top_25.iterrows(),position=0, leave=True):
             error_list[symbol] = e
 
 
-# In[ ]:
+# In[12]:
 
 
 market_panda = pd.DataFrame(top_info_list)
@@ -132,28 +138,32 @@ market_panda.set_index('symbol',inplace=True)
 market_panda = pd.concat([market_panda, top_25], axis=1)
 
 
-# In[ ]:
+# In[13]:
 
 
 pd.set_option('display.max_columns', 999)
 market_panda.iloc[[0]]
 
 
-# In[ ]:
+# In[14]:
 
 
+if 'MCC' in market_panda.index:
+    market_panda = market_panda.drop('MCC')
+if 'FMO' in market_panda.index:
+    market_panda = market_panda.drop('FMO')
 if 'SSI' in market_panda.index:
     market_panda = market_panda.drop('SSI')
 
 
-# In[ ]:
+# In[15]:
 
 
 pd.options.display.float_format = "{:,.2f}".format
 market_panda[['longName','stock_change_percentage','close_price','fiftyTwoWeekHigh','sector']]
 
 
-# In[ ]:
+# In[16]:
 
 
 html_string = '''
@@ -170,7 +180,7 @@ with open('table_report.html', 'w') as f:
     f.write(html_string.format(table=market_panda[['longName','stock_change_percentage','close_price','fiftyTwoWeekHigh','sector']].to_html(classes='mystyle')))
 
 
-# In[ ]:
+# In[17]:
 
 
 path_wkthmltoimage = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltoimage.exe'
@@ -178,14 +188,7 @@ config = imgkit.config(wkhtmltoimage=path_wkthmltoimage)
 imgkit.from_file('table_report.html', 'table_report.jpg',config=config,options={'enable-local-file-access': ''})  
 
 
-# In[ ]:
+# In[18]:
 
 
 Image(filename='table_report.jpg') 
-
-
-# In[ ]:
-
-
-
-
