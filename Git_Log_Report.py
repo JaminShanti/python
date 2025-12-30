@@ -81,6 +81,11 @@ class GitLogReport:
         df = df[["additions", "deletions", "filename", "sha", "timestamp", "author"]]
         df["additions"] = pd.to_numeric(df["additions"], errors="coerce")
         df["deletions"] = pd.to_numeric(df["deletions"], errors="coerce")
+
+        # Parse timestamps once with utc=True to avoid mixed tz warnings and ensure datetimelike dtype
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+
+        # Drop rows missing essential data (including invalid timestamps)
         df = df.dropna(subset=["filename", "sha", "timestamp", "author"])
 
         # Filter out automation accounts (example)
@@ -118,7 +123,7 @@ class GitLogReport:
         self._save_fig(fig, "top20_filename.png", figsize=(28, 18.5))
 
     def _plot_commits_by_hour(self, df: pd.DataFrame) -> None:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        # timestamp already parsed in _load_dataframe
         commits_per_hour = df["timestamp"].dt.hour.value_counts(sort=False).sort_index()
         fig, ax = plt.subplots()
         commits_per_hour.plot.bar(ax=ax)
@@ -129,7 +134,7 @@ class GitLogReport:
         self._save_fig(fig, "commits_per_hour.png")
 
     def _plot_commits_by_weekday(self, df: pd.DataFrame) -> None:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        # timestamp already parsed in _load_dataframe
         commits_per_weekday = df["timestamp"].dt.weekday.value_counts(sort=False).sort_index()
         fig, ax = plt.subplots()
         commits_per_weekday.plot.bar(ax=ax)
@@ -140,7 +145,7 @@ class GitLogReport:
         self._save_fig(fig, "commits_per_day.png")
 
     def _plot_commits_by_date(self, df: pd.DataFrame) -> None:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        # timestamp already parsed in _load_dataframe
         commits_per_date = df["timestamp"].dt.date.value_counts(sort=False).sort_index()
         fig, ax = plt.subplots()
         commits_per_date.plot.bar(ax=ax)
