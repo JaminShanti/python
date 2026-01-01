@@ -4,9 +4,11 @@
 # In[1]:
 
 
-import plotly.figure_factory as ff
+import plotly.express as px
 import pandas as pd
 import time
+import json
+from urllib.request import urlopen
 
 
 # In[2]:
@@ -33,7 +35,7 @@ df_sample_r.loc[df_sample_r.Admin2 == 'Highland']
 # In[4]:
 
 
-date = time.strftime("%Y-%m-%d")
+date = "07-19-2020"
 df_sample_r = df_sample_r[~df_sample_r.FIPS.isin([0])]
 #df_sample_r = df_sample_r[df_sample_r.Confirmed > 300]
 #values = df_sample_r['Confirmed'].tolist()
@@ -64,12 +66,74 @@ colorscale = [
 # In[7]:
 
 
-fig = ff.create_choropleth(
-    fips=fips, values=values,
-    scope=state_names, county_outline={'color': 'rgb(255,255,255)', 'width': 0.5},
-    #legend_title='Confirmed Corona Cases USA %s Source: John Hopkins' % date
-    legend_title='Confirmed Corona Deaths USA %s Source: John Hopkins' % date
-    #legend_title='Confirmed Corona Active USA %s Source: John Hopkins' % date
+# Load US counties GeoJSON for Plotly Express choropleth
+with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
+    counties = json.load(response)
+
+# Build choropleth using Plotly Express (only change from original)
+# Compute state totals for hover info
+state_totals = df_sample_r.groupby('Province_State')['Deaths'].sum()
+df_sample_r = df_sample_r.copy()
+df_sample_r['State_Deaths_Total'] = df_sample_r['Province_State'].map(state_totals)
+
+# Create discrete bins for improved readability
+bins_edges = [1, 5, 25, 100, 500, float('inf')]
+bin_labels = ['1-5', '6-25', '26-100', '101-500', '500+']
+# Start with all zeros labeled explicitly
+df_sample_r['Deaths_Bin'] = '0'
+mask_pos = df_sample_r['Deaths'] > 0
+if mask_pos.any():
+    df_sample_r.loc[mask_pos, 'Deaths_Bin'] = pd.cut(
+        df_sample_r.loc[mask_pos, 'Deaths'],
+        bins=bins_edges,
+        labels=bin_labels,
+        right=True,
+        include_lowest=True
+    ).astype(str)
+
+# Discrete color palette (purple -> blue -> teal -> green -> yellow), plus gray for 0
+bin_order = ['0'] + bin_labels
+color_map = {
+    '0': '#444444',
+    '1-5': '#5b2a86',
+    '6-25': '#3b4cc0',
+    '26-100': '#1fa187',
+    '101-500': '#55c667',
+    '500+': '#fde725'
+}
+
+fig = px.choropleth(
+    df_sample_r,
+    geojson=counties,
+    locations='FIPS',
+    color='Deaths_Bin',
+    scope='usa',
+    color_discrete_map=color_map,
+    category_orders={'Deaths_Bin': bin_order},
+    labels={'Deaths_Bin': 'County deaths (bins) — %s' % date},
+    custom_data=['Province_State','Admin2','Deaths','FIPS','State_Deaths_Total','Deaths_Bin']
+)
+# Match county outline from original and enrich hover
+fig.update_traces(marker_line_width=0.5, marker_line_color='rgb(255,255,255)')
+fig.update_traces(hovertemplate='State: %{customdata[0]}<br>'
+                               'County: %{customdata[1]}<br>'
+                               'FIPS: %{customdata[3]}<br>'
+                               'County deaths: %{customdata[2]:,}<br>'
+                               'State deaths total: %{customdata[4]:,}'
+                               '<extra></extra>')
+
+# Switch hover to show both the exact count and the bin label; use categorical legend
+fig.update_traces(hovertemplate='State: %{customdata[0]}<br>'
+                               'County: %{customdata[1]}<br>'
+                               'FIPS: %{customdata[3]}<br>'
+                               'County deaths: %{customdata[2]:,} (%{customdata[5]})<br>'
+                               'State deaths total: %{customdata[4]:,}'
+                               '<extra></extra>')
+
+# Legend styling (categorical legend for bins)
+fig.update_layout(
+    legend_title_text='County deaths (bins) — %s' % date,
+    legend_traceorder='normal'
 )
 
 
@@ -77,20 +141,36 @@ fig = ff.create_choropleth(
 
 
 fig.update_layout(
-    legend_x = 0,
-    annotations = {'x': -0.12, 'xanchor': 'left'},
+    legend_x=0,
+    annotations=[{
+        'x': -0.12,
+        'y': 1.0,
+        'xref': 'paper',
+        'yref': 'paper',
+        'xanchor': 'left',
+        'showarrow': False
+    }],
     template='plotly_dark'
 )
+
+# Export PNG image
+output_path = f"covid_choropleth_{date}.png"
+try:
+    fig.write_image(output_path, width=1200, height=800, scale=2)
+    print(f"Wrote {output_path}")
+except Exception as e:
+    print(f"Image export failed: {e}")
 
 
 # In[9]:
 
 
-df_sample_r.nlargest(25, 'Deaths')[['Admin2','Province_State','Deaths']]
+df_sample_r.nlargest(25, 'Deaths')[[
+    'Admin2','Province_State','Deaths'
+]]
 
 
 # In[ ]:
-
 
 
 

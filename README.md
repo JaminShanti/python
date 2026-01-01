@@ -1,4 +1,4 @@
-![Profile Image](assets/profile.jpg)
+![Jamin Shanti - GitHub Avatar](https://github.com/JaminShanti.png?size=240)
 
 > Welcome to my retro for the `python` repo (master).
 
