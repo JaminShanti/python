@@ -32,9 +32,8 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 ## How to Run
 Prerequisites:
 - Windows, Python 3.13+
-- `git` on PATH
-- Python packages: `pandas`, `matplotlib`, `gitpython`
+- `git` on PATH- Python packages: `GitPython`, `pandas`, `matplotlib`, `plotly`, `kaleido`, `boto3`, `requests`, `bigsuds`, `PyYAML`, `yfinance`, `numpy`, `tqdm`, `pandas-datareader`, `imgkit`, `IPython`, `paramiko`, `wordcloud`, `yagmail`, `tabulate`, `html2text`, `fbchat`
 
 Install:
 ```powershell
-pip install pandas matplotlib gitpython
+pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds pyyaml yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat
