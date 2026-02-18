@@ -1,4 +1,4 @@
-##!/usr/bin/env python
+#!/usr/bin/env python
 import sys
 import socket
 import paramiko
@@ -6,20 +6,34 @@ import ast
 import multiprocessing
 import re
 import json
-from argparse import ArgumentParser
+import argparse
+import logging
 from datetime import datetime
 
 __author__ = 'jshanti'
 __email__ = "devops@gmail.com"
 __status__ = "Development"
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger('RecycleWebLogicServer')
 
-def manage_container(command_option, sshusername, servername, containername, containerstatus, managescript,applicationserviceaccount):
+def manage_container(command_option, sshusername, servername, containername, containerstatus, managescript, applicationserviceaccount):
+    """
+    Executes a remote command via SSH to manage a WebLogic container.
+    """
     tmp_retcode = 0
     tmp_errormsgs = []
 
-    print "Completing Action: '%s' Container: '%s' on Machine: '%s' Current_Status: '%s' SSH_User: '%s' Application_Service_Account: '%s'" % (
-        command_option, containername, servername, containerstatus, sshusername, applicationserviceaccount)
+    logger.info("Action: '%s' | Container: '%s' | Machine: '%s' | Status: '%s' | User: '%s' | ServiceAccount: '%s'",
+                command_option, containername, servername, containerstatus, sshusername, applicationserviceaccount)
+    
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -27,17 +41,24 @@ def manage_container(command_option, sshusername, servername, containername, con
         ssh.connect(hostname=servername, username=sshusername)
         remote_command = "sudo -H -u %s %s -o '%s' -s '%s'" % (
             applicationserviceaccount, managescript, command_option, containername)
-        vprint("\t\t Connecting to Server: '%s', running command : '%s'" % (servername, remote_command))
+        
+        logger.debug("Connecting to Server: '%s', running command: '%s'", servername, remote_command)
+        
         stdin, stdout, stderr = ssh.exec_command(remote_command)
-        return_stdout = stdout.read()[:-1]
-        vprint("\t\t Response Message: '%s'" % return_stdout)
+        return_stdout = stdout.read().decode('utf-8').strip()
+        
+        logger.debug("Response Message: '%s'", return_stdout)
+        
         tmp_retcode += stdout.channel.recv_exit_status()
+        
         if tmp_retcode > 0:
             if "java.lang.InterruptedException: sleep interrupted" in return_stdout:
                 tmp_errormsgs.append("java.lang.InterruptedException: sleep interrupted")
+        
         ssh.close()
+        
         if command_option == "getstate":
-            status_filter = re.compile("Current state of \".*\" : .*")
+            status_filter = re.compile(r"Current state of \".*\" : .*")
             results = re.findall(status_filter, return_stdout)
             if len(results) > 0:
                 containerstatus = results[0].split(": ", 1)[-1]
@@ -45,275 +66,240 @@ def manage_container(command_option, sshusername, servername, containername, con
             if tmp_retcode == 0:
                 containerstatus = command_option.upper()
 
-
     except paramiko.AuthenticationException:
-        print "Authentication failed for some reason"
-    except paramiko.SSHException, e:
-        print "Password is invalid:", e
-    except socket.error, e:
-        print "Socket connection failed on %s:" % servername, e
-    # handle if script is stopped abruptly
-    if "Exiting Script. Return Code" not in return_stdout:
+        logger.error("Authentication failed for %s@%s", sshusername, servername)
         tmp_retcode += 1
-    else:
-        list_tmp_retcode = ast.literal_eval(return_stdout.split("Exiting Script. Return Code ", 1)[-1].strip())
-        tmp_retcode += list_tmp_retcode[0]
+        tmp_errormsgs.append("Authentication failed")
+    except paramiko.SSHException as e:
+        logger.error("SSH error on %s: %s", servername, e)
+        tmp_retcode += 1
+        tmp_errormsgs.append(str(e))
+    except socket.error as e:
+        logger.error("Socket connection failed on %s: %s", servername, e)
+        tmp_retcode += 1
+        tmp_errormsgs.append(str(e))
+    except Exception as e:
+        logger.error("Unexpected error on %s: %s", servername, e)
+        tmp_retcode += 1
+        tmp_errormsgs.append(str(e))
+
+    # Handle if script is stopped abruptly or returns specific exit codes
+    if "Exiting Script. Return Code" in return_stdout:
+        try:
+            list_tmp_retcode = ast.literal_eval(return_stdout.split("Exiting Script. Return Code ", 1)[-1].strip())
+            if isinstance(list_tmp_retcode, list) and len(list_tmp_retcode) > 0:
+                tmp_retcode += list_tmp_retcode[0]
+        except Exception as e:
+            logger.warning("Failed to parse return code from stdout: %s", e)
 
     return_time = datetime.today()
 
-
     return tmp_retcode, tmp_errormsgs, servername, containername, containerstatus, return_time
-
-
-def vprint(msg):
-    if recycleWeblogicServer.verbose:
-        print(msg)
 
 
 class RecycleWebLogicServer(object):
     def __init__(self):
         self.hostname = socket.gethostname()
         self.targetInstanceList = []
-        self.instanceList = []
-        self.verbose = False
-        return
+        self.serverList = []
+        self.serverListConfig = "/workspace/deploy/weblogicServerList.json"
+        self.sshUserName = "userid"
+        self.command_option = None
+        self.statusFlag = False
 
-    def handle_options(self):
-        retcode = 0
-        errormsgs = []
-        parser = ArgumentParser()
+    def parse_arguments(self):
+        """
+        Parses command line arguments using argparse.
+        """
+        parser = argparse.ArgumentParser(description="Manage WebLogic Server Instances")
 
-        group = parser.add_argument_group('group')
+        parser.add_argument("-s", "--serverList", dest="serverList", required=True, nargs='+', 
+                            help="List of servers (comma-separated or space-separated). Example: -s server1,server2")
+        parser.add_argument("-l", "--serverListConfig", dest="serverListConfig", 
+                            default="/workspace/deploy/weblogicServerList.json",
+                            help="Configuration File providing server container information")
+        parser.add_argument("-u", "--sshUserName", dest="sshUserName", default="userid",
+                            help="SSH Username")
+        
+        # Action group (mutually exclusive)
+        action_group = parser.add_mutually_exclusive_group(required=True)
+        action_group.add_argument("--resume", dest="action", action="store_const", const="resume", help="Resume instances")
+        action_group.add_argument("--suspend", dest="action", action="store_const", const="suspend", help="Suspend instances")
+        action_group.add_argument("--restart", dest="action", action="store_const", const="restart", help="Restart instances")
+        action_group.add_argument("--start", dest="action", action="store_const", const="start", help="Start instances")
+        action_group.add_argument("--stop", dest="action", action="store_const", const="stop", help="Stop instances")
+        action_group.add_argument("--status", dest="action", action="store_const", const="getstate", help="Check status")
 
-        group.add_argument("--serverList", "-s", dest="serverList", required=False, nargs='+', type=str,
-                           help="ServerList is required.  Example -s server1,server2,server3")
-        group.add_argument("--serverListConfig", "-l", dest="serverListConfig", action="store",
-                           default="/workspace/deploy/weblogicServerList.json",
-                           help="Configuration File proving server container information, default=/workspace/deploy/weblogicServerList.json")
-        group.add_argument("--sshUserName", "-u", dest="sshUserName", action="store", default="userid",
-                           help="sshUsername, default=userid")
-        group.add_argument("--resume", dest="resumeFlag", action="store_true", default=False,
-                           help="Weather To resume weblogic instances, default=False")
-        group.add_argument("--suspend", dest="suspendFlag", action="store_true", default=False,
-                           help="Weather To suspend weblogic instances, default=False")
-        group.add_argument("--restart", dest="restartFlag", action="store_true", default=False,
-                           help="Weather To restart weblogic instances, default=False")
-        group.add_argument("--start", dest="startFlag", action="store_true", default=False,
-                           help="Weather To start weblogic instances, default=False")
-        group.add_argument("--stop", dest="stopFlag", action="store_true", default=False,
-                           help="Weather To stop weblogic instances, default=False")
-        group.add_argument("--status", dest="statusFlag", action="store_true", default=False,
-                           help="Check Status of weblogic instances, default=False")
-        group.add_argument("--verbose", dest="verbose", action="store_true", default=False,
-                           help="Be verbose, default=False")
+        parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", help="Enable verbose logging")
 
-        options = parser.parse_args()
+        args = parser.parse_args()
 
+        # Handle server list parsing
+        if args.serverList:
+            if "," in args.serverList[0]:
+                self.serverList = args.serverList[0].split(",")
+            else:
+                self.serverList = args.serverList
 
-        if "," in options.serverList[0]:
-            self.serverList = options.serverList[0].split(",")
-        else:
-            self.serverList = options.serverList
+        self.serverListConfig = args.serverListConfig
+        self.sshUserName = args.sshUserName
+        self.command_option = args.action
+        
+        if args.verbose:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Verbose logging enabled")
 
-        if options.serverListConfig:
-            self.serverListConfig = options.serverListConfig
+        if self.command_option == "getstate":
+            self.statusFlag = True
 
-        self.sshUserName = options.sshUserName
-        self.verbose = options.verbose
+        logger.info("Arguments: Servers=%s, Action='%s'", self.serverList, self.command_option)
+        return 0, []
 
-        anyflag = 0
-        if options.resumeFlag:
-            anyflag += 1
-        if options.suspendFlag:
-            anyflag += 1
-        if options.restartFlag:
-            anyflag += 1
-        if options.startFlag:
-            anyflag += 1
-        if options.stopFlag:
-            anyflag += 1
-        if options.statusFlag:
-            anyflag += 1
-
-        if anyflag > 0:
-            self.suspendFlag = options.suspendFlag
-            self.resumeFlag = options.resumeFlag
-            self.restartFlag = options.restartFlag
-            self.startFlag = options.startFlag
-            self.stopFlag = options.stopFlag
-            self.statusFlag = options.statusFlag
-        else:
-            self.restartFlag = False
-            self.startFlag = False
-            self.stopFlag = False
-            self.statusFlag = False
-            self.resumeFlag = False
-            self.suspendFlag = False
-
-        if self.stopFlag:
-            self.command_option = "stop"
-        elif self.suspendFlag:
-            self.command_option = "suspend"
-        elif self.resumeFlag:
-            self.command_option = "resume"
-        elif self.startFlag:
-            self.command_option = "start"
-        elif self.restartFlag:
-            self.command_option = "restart"
-        elif self.statusFlag:
-            self.command_option = "getstate"
-
-        else:
-            self.command_option = None
-
-        self.vprint(
-            "\t\t Arguments provided are Servernames: '%s', command_option set to '%s'" % (
-                self.serverList, self.command_option))
-        self.vprint("\t\t %s%d, %s%s" % ("Retcode=", retcode, "ErrorMessages=", errormsgs))
-        return retcode, errormsgs
-
-    def check_weblogic_configuration(self):
+    def load_configuration(self):
+        """
+        Loads the WebLogic server configuration from a JSON file.
+        """
         retcode = 0
         errormsgs = []
         try:
-            self.vprint(
-                "\t\t Importing configuration file : weblogicServerList.json")
-            with open(self.serverListConfig) as data_file:
+            logger.info("Loading configuration file: %s", self.serverListConfig)
+            with open(self.serverListConfig, 'r') as data_file:
                 instancelist = json.load(data_file)
+            
+            logger.debug("Full instance list loaded: %s", instancelist)
+            
+            for instance in instancelist:
+                if instance.get("machineName") in self.serverList:
+                    logger.info("Discovered Managed Container: '%s' on Machine: '%s'", 
+                                instance.get("containerName"), instance.get("machineName"))
+                    self.targetInstanceList.append(instance)
+            
+            if not self.targetInstanceList:
+                logger.warning("No matching containers found for the provided server list.")
+                
+        except IOError as e:
+            logger.error("Failed to read configuration file: %s", e)
+            retcode = 1
+            errormsgs.append(str(e))
+        except ValueError as e:
+            logger.error("Invalid JSON in configuration file: %s", e)
+            retcode = 1
+            errormsgs.append(str(e))
         except Exception as e:
-            print e
-        self.vprint("\t\t Complete List of Containers found:'%s'" % instancelist)
-        for instance in instancelist:
-            if instance["machineName"] in self.serverList:
-                print "Discovered Managed Container: '%s' on Machine: '%s'" % (
-                    instance["containerName"], instance["machineName"])
-                self.targetInstanceList.append(instance)
+            logger.error("Unexpected error loading configuration: %s", e)
+            retcode = 1
+            errormsgs.append(str(e))
 
-        self.vprint("\t\t Total targetInstnaceList: '%s'" % self.targetInstanceList)
-
-        self.vprint("\t\t %s%d, %s%s" % ("Retcode=", retcode, "ErrorMessages=", errormsgs))
         return retcode, errormsgs
 
-    def check_container_status(self):
+    def execute_tasks(self, action_override=None):
+        """
+        Executes the management tasks in parallel.
+        """
         retcode = 0
         errormsgs = []
         tasks = []
+        
+        command_to_run = action_override if action_override else self.command_option
+        
         jobmaxcount = multiprocessing.cpu_count()
-        print "Running on Server: '%s' CPUCount: '%s' Maximum asyncJobs: '%s'" % (
-            self.hostname, jobmaxcount, jobmaxcount)
+        logger.info("Execution Pool: Server='%s', CPUs='%s', MaxJobs='%s'", self.hostname, jobmaxcount, jobmaxcount)
+        
         pool = multiprocessing.Pool(jobmaxcount)
+        
         # Build task list
         for instance in self.targetInstanceList:
-            self.vprint("\t\t Attempting instance: '%s'" % instance)
-            tasks.append(("getstate", self.sshUserName, instance["machineName"], instance["containerName"], instance["containerStatus"],
-                 instance["manageScript"],instance["applicationServiceAccount"]))
-
-        # Run tasks
-        results = [pool.apply_async(manage_container, t) for t in tasks]
-        # Process results
-        for result in results:
-            (tmp_retcode, tmpErrorMsgs, servername, containername, containerstatus, return_time) = result.get()
-            print("Result: Timestamp: '%s' retcode '%d' errormsg '%s' Server: '%s' Container: '%s' Status: '%s'" % (
-                return_time, tmp_retcode, tmpErrorMsgs, servername, containername, containerstatus))
-            retcode += tmp_retcode
-            errormsgs += tmpErrorMsgs
-            # update targetInstanceList
-            for instance in self.targetInstanceList:
-                if instance["machineName"] == servername and instance["containerName"] == containername:
-                    instance["containerStatus"] = containerstatus
-        pool.close()
-        pool.join()
-
-        self.vprint("\t\t %s%d, %s%s" % ("Retcode=", retcode,"ErrorMessages=",errormsgs))
-        return retcode, errormsgs
-
-    def manage_target_servers(self):
-        retcode = 0
-        errormsgs = []
-        tasks = []
-
-        jobmaxcount = multiprocessing.cpu_count()
-        print "Running on Server: '%s' CPUCount: '%s' Maximum asyncJobs: '%s'" % (
-            self.hostname, jobmaxcount, jobmaxcount)
-        pool = multiprocessing.Pool(jobmaxcount)
-        # Build task list
-        for instance in self.targetInstanceList:
-            self.vprint("\t\t Attempting instance: '%s'" % instance)
-            tasks.append((self.command_option, self.sshUserName, instance["machineName"], instance["containerName"],
-                          instance["containerStatus"],
+            logger.debug("Queueing task for instance: %s", instance.get("containerName"))
+            tasks.append((command_to_run, self.sshUserName, instance["machineName"], instance["containerName"],
+                          instance.get("containerStatus", "UNKNOWN"),
                           instance["manageScript"], instance["applicationServiceAccount"]))
 
         # Run tasks
-        results = [pool.apply_async(manage_container, t) for t in tasks]
-        # Process results
-        for result in results:
-            (tmp_retcode, tmpErrorMsgs, servername, containername, containerstatus, return_time) = result.get()
-            print("Result: Timestamp: '%s' retcode '%d' errormsg '%s' Server: '%s' Container: '%s' Status: '%s'" % (
-                return_time, tmp_retcode, tmpErrorMsgs, servername, containername, containerstatus))
-            retcode += tmp_retcode
-            errormsgs += tmpErrorMsgs
-            # update targetInstanceList
+        try:
+            results = [pool.apply_async(manage_container, t) for t in tasks]
+            pool.close()
+            pool.join()
+            
+            # Process results
+            for result in results:
+                (tmp_retcode, tmpErrorMsgs, servername, containername, containerstatus, return_time) = result.get()
+                
+                log_level = logging.INFO if tmp_retcode == 0 else logging.ERROR
+                logger.log(log_level, "Result: Time='%s' | Code='%d' | Server='%s' | Container='%s' | Status='%s' | Errors='%s'",
+                           return_time, tmp_retcode, servername, containername, containerstatus, tmpErrorMsgs)
+                
+                retcode += tmp_retcode
+                errormsgs.extend(tmpErrorMsgs)
+                
+                # Update internal state
+                for instance in self.targetInstanceList:
+                    if instance["machineName"] == servername and instance["containerName"] == containername:
+                        instance["containerStatus"] = containerstatus
+                        
+        except Exception as e:
+            logger.error("Error during parallel execution: %s", e)
+            retcode += 1
+            errormsgs.append(str(e))
+        finally:
+            pool.terminate()
+
+        return retcode, errormsgs
+
+    def run(self):
+        """
+        Main execution flow.
+        """
+        retcode, errormsgs = self.parse_arguments()
+        if retcode != 0:
+            sys.exit(retcode)
+
+        retcode, msgs = self.load_configuration()
+        errormsgs.extend(msgs)
+        
+        if retcode != 0:
+            logger.error("Configuration load failed. Exiting.")
+            sys.exit(retcode)
+
+        if self.statusFlag:
+            # Just check status
+            rc, msgs = self.execute_tasks(action_override="getstate")
+            retcode += rc
+            errormsgs.extend(msgs)
+        else:
+            # Pre-check status
+            logger.info("--- Pre-Check Status ---")
+            rc, msgs = self.execute_tasks(action_override="getstate")
+            retcode += rc
+            errormsgs.extend(msgs)
+            
+            if retcode == 0:
+                # Perform Action
+                logger.info("--- Performing Action: %s ---", self.command_option)
+                rc, msgs = self.execute_tasks()
+                retcode += rc
+                errormsgs.extend(msgs)
+                
+                # Post-check status
+                logger.info("--- Post-Check Status ---")
+                rc, msgs = self.execute_tasks(action_override="getstate")
+                retcode += rc
+                errormsgs.extend(msgs)
+
+        logger.info("--- Execution Summary ---")
+        if retcode == 0:
+            logger.info("All operations completed successfully.")
+        else:
+            logger.error("Operations completed with errors.")
+            for msg in errormsgs:
+                logger.error("Error: %s", msg)
+            
             for instance in self.targetInstanceList:
-                if instance["machineName"] == servername and instance["containerName"] == containername:
-                    instance["containerStatus"] = containerstatus
-        pool.close()
-        pool.join()
+                if instance.get("containerStatus") != "RUNNING":
+                     logger.warning("Instance Issue: Machine='%s' | Container='%s' | Status='%s'", 
+                                    instance["machineName"], instance["containerName"], instance.get("containerStatus"))
 
-        self.vprint("\t\t %s%d, %s%s" % ("Retcode=", retcode, "ErrorMessages=", errormsgs))
-        return retcode, errormsgs
-
-        # Calling container Status
-        tmp_retcode, tmpErrorMsgs = self.check_container_status()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-        self.vprint("\t\t %s%d, %s%s" % ("Retcode=", retcode, "ErrorMessages=", errormsgs))
-        return retcode, errormsgs
-
-    def vprint(self, msg):
-        if self.verbose:
-            print(msg)
-
+        sys.exit(retcode)
 
 if __name__ == '__main__':
-    print("recycleWeblogicServer")
-    print (datetime.today())
-    retcode = 0
-    errormsgs = []
-    recycleWeblogicServer = RecycleWebLogicServer()
-
-    tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.handle_options()
-    retcode += tmpRetcode
-    errormsgs += tmpErrorMsgs
-
-    if retcode == 0:
-        tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.check_weblogic_configuration()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-    if not recycleWeblogicServer.statusFlag and retcode == 0:
-        tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.check_container_status()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-        tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.manage_target_servers()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-        tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.check_container_status()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-    elif recycleWeblogicServer.statusFlag and retcode == 0:
-        tmpRetcode, tmpErrorMsgs = recycleWeblogicServer.check_container_status()
-        retcode += tmpRetcode
-        errormsgs += tmpErrorMsgs
-
-    print (datetime.today())
-    if retcode == 0:
-        print ("No problems found.")
-    else:
-        print ("One or more problems found!")
-        for errormsg in errormsgs:
-            print "\t - %s" % errormsg
-            print "\t Retcode=%d" % retcode
-        for instance in recycleWeblogicServer.targetInstanceList:
-            if instance["containerStatus"] <> "RUNNING":
-                print "Machine: '%s' Container: '%s' Current_Status: '%s'" % (instance["machineName"],instance["containerName"],instance["containerStatus"])
-
-    sys.exit(retcode)
+    app = RecycleWebLogicServer()
+    app.run()
