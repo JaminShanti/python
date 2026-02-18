@@ -1,4 +1,3 @@
-# python
 #!/usr/bin/env python3
 import argparse
 import logging
@@ -7,15 +6,24 @@ import sys
 from io import StringIO
 from typing import Optional
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 try:
     import git
     import pandas as pd
     import matplotlib
-
-    matplotlib.use("Agg")
+    matplotlib.use("Agg") # Use non-interactive backend
     import matplotlib.pyplot as plt
-except Exception:
-    print("Missing dependency: please install 'gitpython', 'pandas', and 'matplotlib'")
+except ImportError as e:
+    logger.error(f"Missing dependency: {e}. Please install 'gitpython', 'pandas', and 'matplotlib'")
     sys.exit(1)
 
 
@@ -27,155 +35,207 @@ __creation_date__ = "June 29th 2018"
 class GitLogReport:
     """
     Generate git activity plots for a repository.
-
-    Usage:
-        report = GitLogReport(repo_path='.', since='last month', outdir='reports')
-        report.run()
     """
 
     def __init__(self, repo_path: str = ".", since: str = "last month", outdir: str = ".") -> None:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         self.repo_path = repo_path
         self.since = since
         self.outdir = outdir
-        os.makedirs(self.outdir, exist_ok=True)
+        
+        if not os.path.exists(self.outdir):
+            os.makedirs(self.outdir)
+            logger.info(f"Created output directory: {self.outdir}")
 
         try:
             self.repo = git.Repo(self.repo_path)
+            logger.info(f"Initialized Git repo at {self.repo_path}")
+        except git.InvalidGitRepositoryError:
+            logger.error(f"Not a valid git repository: {self.repo_path}")
+            sys.exit(1)
         except Exception as exc:
-            logging.error("Not a git repository: %s", self.repo_path)
-            raise
+            logger.error(f"Error initializing git repo: {exc}")
+            sys.exit(1)
 
-        if self.repo.remotes and len(self.repo.remotes) > 0:
+        self.repo_name = "Unknown Repo"
+        if self.repo.remotes:
             try:
-                self.repo_name = self.repo.remotes[0].url
+                self.repo_name = os.path.basename(self.repo.remotes[0].url).replace('.git', '')
             except Exception:
-                self.repo_name = self.repo_path
+                self.repo_name = os.path.basename(os.path.abspath(self.repo_path))
         else:
-            self.repo_name = self.repo_path
+            self.repo_name = os.path.basename(os.path.abspath(self.repo_path))
 
-    def _raw_git_log(self) -> str:
-        fmt = "--pretty=format:\t\t\t%h\t%ad\t%aN"
-        args = ["--since=" + self.since, "--numstat", "--no-merges", fmt, "--date=iso"]
-        # gitpython will accept these as separate args
-        return self.repo.git.log(*args)
+    def get_git_log_data(self) -> pd.DataFrame:
+        """
+        Retrieves and parses git log data into a DataFrame.
+        """
+        # Format: hash, date, author name
+        # We use a custom separator to avoid issues with commit messages
+        # But here we are just getting stats, so we rely on --numstat
+        # The original logic used a specific format string that pandas could parse
+        
+        # Constructing the git command arguments
+        # --numstat gives: additions deletions filename
+        # --pretty=format:... gives the commit metadata
+        # The output is mixed, so we need to be careful.
+        # The original script relied on a specific structure that might be fragile.
+        # Let's try to replicate the original logic but safely.
+        
+        try:
+            # Using a format that puts metadata on one line, followed by numstat lines
+            # We will parse it manually instead of relying on read_csv directly on the raw output
+            # to handle potential parsing errors better.
+            
+            # However, to keep it simple and close to the original "pandas read_csv" approach if it works:
+            # The original used: --pretty=format:\t\t\t%h\t%ad\t%aN
+            # This creates lines like:			hash	date	author
+            # And numstat lines like: 1	1	filename
+            # The read_csv with sep='\t' handles this by treating the empty fields in numstat lines as NaNs?
+            # Actually, numstat lines have 3 columns. The metadata line has empty first 3 cols if we use the format above?
+            # No, the format string "\t\t\t%h\t%ad\t%aN" creates a line starting with 3 tabs.
+            # So it aligns with "additions", "deletions", "filename", "sha", "timestamp", "author"
+            # where the first 3 are empty for metadata rows.
+            # And numstat rows have data in first 3 cols, and empty in last 3?
+            # No, numstat rows don't have the last 3 cols.
+            # So pandas read_csv with names=... will fill missing cols with NaN.
+            
+            fmt = "\t\t\t%h\t%ad\t%aN"
+            git_args = ["--since=" + self.since, "--numstat", "--no-merges", f"--pretty=format:{fmt}", "--date=iso"]
+            
+            raw_log = self.repo.git.log(*git_args)
+            
+            if not raw_log.strip():
+                return pd.DataFrame()
 
-    def _load_dataframe(self) -> pd.DataFrame:
-        raw = self._raw_git_log()
-        if not raw or not raw.strip():
-            return pd.DataFrame()
+            df = pd.read_csv(
+                StringIO(raw_log),
+                sep="\t",
+                header=None,
+                names=["additions", "deletions", "filename", "sha", "timestamp", "author"],
+                engine="python"
+            )
 
-        df = pd.read_csv(
-            StringIO(raw),
-            sep="\t",
-            header=None,
-            names=["additions", "deletions", "filename", "sha", "timestamp", "author"],
-            engine="python",
-        )
-
-        # Forward-fill metadata rows; handle missing columns safely
-        if {"sha", "timestamp", "author"}.issubset(df.columns):
+            # Forward fill the metadata (sha, timestamp, author) from the commit header line down to the file lines
+            # The commit header line has NaNs in additions/deletions/filename (actually filename might be empty string)
+            # The numstat lines have NaNs in sha/timestamp/author
+            
+            # In the original format "\t\t\t%h...", the first 3 cols are empty.
+            # So additions/deletions/filename are NaN for these rows.
+            # We forward fill sha/timestamp/author.
             df[["sha", "timestamp", "author"]] = df[["sha", "timestamp", "author"]].fillna(method="ffill")
 
-        # Keep relevant columns and coerce numeric types
-        df = df[["additions", "deletions", "filename", "sha", "timestamp", "author"]]
-        df["additions"] = pd.to_numeric(df["additions"], errors="coerce")
-        df["deletions"] = pd.to_numeric(df["deletions"], errors="coerce")
+            # Now drop the rows that were just headers (where filename is NaN)
+            df = df.dropna(subset=["filename"])
 
-        # Parse timestamps once with utc=True to avoid mixed tz warnings and ensure datetimelike dtype
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            # Convert numeric columns
+            df["additions"] = pd.to_numeric(df["additions"], errors="coerce").fillna(0)
+            df["deletions"] = pd.to_numeric(df["deletions"], errors="coerce").fillna(0)
 
-        # Drop rows missing essential data (including invalid timestamps)
-        df = df.dropna(subset=["filename", "sha", "timestamp", "author"])
+            # Convert timestamp
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
 
-        # Filter out automation accounts (example)
-        df["author"] = df["author"].astype(str)
-        df = df[~df["author"].str.lower().str.contains("jenkins")]
+            # Filter out rows with invalid timestamps
+            df = df.dropna(subset=["timestamp"])
 
-        return df
+            # Filter out automation accounts if needed
+            df = df[~df["author"].astype(str).str.lower().str.contains("jenkins", na=False)]
 
-    def _save_fig(self, fig: plt.Figure, name: str, dpi: int = 100, figsize: Optional[tuple] = None) -> None:
-        if figsize:
-            fig.set_size_inches(*figsize)
-        path = os.path.join(self.outdir, name)
-        fig.savefig(path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
-        logging.info("Saved %s", path)
+            return df
 
-    def _plot_top_authors(self, df: pd.DataFrame) -> None:
-        top20 = df["author"].value_counts().head(20)
-        fig, ax = plt.subplots()
-        top20.plot.bar(ax=ax)
-        ax.set_title(f"Top Authors: {self.repo_name}")
-        ax.set_xlabel("Authors")
-        ax.set_ylabel("Number of Commits")
-        fig.autofmt_xdate()
-        self._save_fig(fig, "top20.png", figsize=(16.5, 8.5))
+        except Exception as e:
+            logger.error(f"Error parsing git log: {e}")
+            return pd.DataFrame()
 
-    def _plot_top_filenames(self, df: pd.DataFrame) -> None:
-        top20 = df["filename"].value_counts().head(20)
-        fig, ax = plt.subplots()
-        top20.plot.bar(ax=ax)
-        ax.set_title(f"Top Filenames: {self.repo_name}", fontsize=18)
-        ax.set_xlabel("Filenames")
-        ax.set_ylabel("Number of Commits")
-        fig.autofmt_xdate()
-        self._save_fig(fig, "top20_filename.png", figsize=(28, 18.5))
+    def save_plot(self, fig: plt.Figure, filename: str) -> None:
+        path = os.path.join(self.outdir, filename)
+        try:
+            fig.savefig(path, bbox_inches="tight")
+            plt.close(fig)
+            logger.info(f"Saved plot to {path}")
+        except Exception as e:
+            logger.error(f"Failed to save plot {filename}: {e}")
 
-    def _plot_commits_by_hour(self, df: pd.DataFrame) -> None:
-        # timestamp already parsed in _load_dataframe
-        commits_per_hour = df["timestamp"].dt.hour.value_counts(sort=False).sort_index()
-        fig, ax = plt.subplots()
-        commits_per_hour.plot.bar(ax=ax)
-        ax.set_title(f"Commits per Hour: {self.repo_name}")
-        ax.set_xlabel("Hour of Day")
-        ax.set_ylabel("Number of Commits")
-        fig.autofmt_xdate()
-        self._save_fig(fig, "commits_per_hour.png")
+    def generate_plots(self, df: pd.DataFrame) -> None:
+        if df.empty:
+            logger.warning("No data to plot.")
+            return
 
-    def _plot_commits_by_weekday(self, df: pd.DataFrame) -> None:
-        # timestamp already parsed in _load_dataframe
-        commits_per_weekday = df["timestamp"].dt.weekday.value_counts(sort=False).sort_index()
-        fig, ax = plt.subplots()
-        commits_per_weekday.plot.bar(ax=ax)
-        ax.set_title(f"Commits per Weekday: {self.repo_name}")
-        ax.set_xlabel("Day of Week (0=Mon)")
-        ax.set_ylabel("Number of Commits")
-        fig.autofmt_xdate()
-        self._save_fig(fig, "commits_per_day.png")
+        # 1. Top Authors
+        top_authors = df["author"].value_counts().head(20)
+        if not top_authors.empty:
+            fig, ax = plt.subplots(figsize=(12, 6))
+            top_authors.plot.bar(ax=ax)
+            ax.set_title(f"Top Authors: {self.repo_name}")
+            ax.set_ylabel("Commits (Files Changed)")
+            fig.autofmt_xdate()
+            self.save_plot(fig, "top20_authors.png")
 
-    def _plot_commits_by_date(self, df: pd.DataFrame) -> None:
-        # timestamp already parsed in _load_dataframe
-        commits_per_date = df["timestamp"].dt.date.value_counts(sort=False).sort_index()
-        fig, ax = plt.subplots()
-        commits_per_date.plot.bar(ax=ax)
-        ax.set_title(f"Commits per Day: {self.repo_name}")
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Number of Commits")
-        fig.autofmt_xdate()
-        self._save_fig(fig, "commits_per_date.png", figsize=(14.5, 6.5))
+        # 2. Top Filenames
+        top_files = df["filename"].value_counts().head(20)
+        if not top_files.empty:
+            fig, ax = plt.subplots(figsize=(14, 8))
+            top_files.plot.bar(ax=ax)
+            ax.set_title(f"Top Modified Files: {self.repo_name}")
+            ax.set_ylabel("Change Count")
+            fig.autofmt_xdate()
+            self.save_plot(fig, "top20_filename.png")
+
+        # 3. Commits by Hour
+        commits_by_hour = df["timestamp"].dt.hour.value_counts().sort_index()
+        if not commits_by_hour.empty:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            commits_by_hour.plot.bar(ax=ax)
+            ax.set_title(f"Activity by Hour: {self.repo_name}")
+            ax.set_xlabel("Hour of Day")
+            ax.set_ylabel("Activity Count")
+            self.save_plot(fig, "commits_per_hour.png")
+
+        # 4. Commits by Weekday
+        commits_by_day = df["timestamp"].dt.day_name().value_counts()
+        # Sort by day order
+        days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        commits_by_day = commits_by_day.reindex(days_order).fillna(0)
+        
+        if not commits_by_day.empty:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            commits_by_day.plot.bar(ax=ax)
+            ax.set_title(f"Activity by Weekday: {self.repo_name}")
+            ax.set_ylabel("Activity Count")
+            self.save_plot(fig, "commits_per_day.png")
+
+        # 5. Commits by Date
+        commits_by_date = df["timestamp"].dt.date.value_counts().sort_index()
+        if not commits_by_date.empty:
+            fig, ax = plt.subplots(figsize=(14, 6))
+            commits_by_date.plot.line(ax=ax, marker='o') # Line plot often better for time series
+            ax.set_title(f"Activity Over Time: {self.repo_name}")
+            ax.set_ylabel("Activity Count")
+            fig.autofmt_xdate()
+            self.save_plot(fig, "commits_per_date.png")
 
     def run(self) -> int:
-        df = self._load_dataframe()
+        logger.info(f"Analyzing repo: {self.repo_path} (Since: {self.since})")
+        df = self.get_git_log_data()
+        
         if df.empty:
-            logging.error("No recent commits found (since=%s). Exiting.", self.since)
-            return 1
+            logger.warning(f"No commits found since '{self.since}'.")
+            return 0
 
-        self._plot_top_authors(df)
-        self._plot_top_filenames(df)
-        self._plot_commits_by_hour(df)
-        self._plot_commits_by_weekday(df)
-        self._plot_commits_by_date(df)
-        logging.info("All reports generated in %s", self.outdir)
+        logger.info(f"Processed {len(df)} file change events.")
+        self.generate_plots(df)
         return 0
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate git activity plots.")
-    parser.add_argument("--repo", "-r", default=".", help="Path to git repository (default: current dir)")
-    parser.add_argument("--since", "-s", default="last month", help="git --since argument (default: 'last month')")
-    parser.add_argument("--outdir", "-o", default=".", help="Output directory for images")
+def main():
+    parser = argparse.ArgumentParser(description="Generate Git Activity Reports")
+    parser.add_argument("--repo", "-r", default=".", help="Path to git repository")
+    parser.add_argument("--since", "-s", default="last month", help="Timeframe (e.g., '1 week ago', '2023-01-01')")
+    parser.add_argument("--outdir", "-o", default=".", help="Output directory for reports")
+    
     args = parser.parse_args()
 
     report = GitLogReport(repo_path=args.repo, since=args.since, outdir=args.outdir)
-    raise SystemExit(report.run())
+    sys.exit(report.run())
+
+if __name__ == "__main__":
+    main()
