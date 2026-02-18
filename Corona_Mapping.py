@@ -1,176 +1,260 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-
-
+import logging
 import plotly.express as px
 import pandas as pd
-import time
 import json
-from urllib.request import urlopen
+import os
+import requests
+from typing import Optional
+
+# Set default renderer to kaleido (corrected typo)
+import plotly.io as pio
+
+pio.renderers.default = "kaleido"  # ✅ Correct name
 
 
-# In[2]:
+class CoronaMapper:
+    def __init__(self, date: str = "07-19-2020"):
+        """Initialize CoronaMapper with logging configuration"""
+        self.setup_logger()
+        self.date = date
+        self.state_names = [
+            "Alabama", "Arkansas", "Arizona", "California", "Colorado", "Connecticut",
+            "District of Columbia", "Delaware", "Florida", "Georgia", "Iowa", "Idaho",
+            "Illinois", "Indiana", "Kansas", "Kentucky", "Louisiana", "Massachusetts",
+            "Maryland", "Maine", "Michigan", "Minnesota", "Missouri", "Mississippi",
+            "Montana", "North Carolina", "North Dakota", "Nebraska", "New Hampshire",
+            "New Jersey", "New Mexico", "Nevada", "New York", "Ohio", "Oklahoma", "Oregon",
+            "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee",
+            "Texas", "Utah", "Virginia", "Vermont", "Washington", "Wisconsin",
+            "West Virginia", "Wyoming"
+        ]
+
+        # URLs for data sources
+        self.missing_fips_url = (
+            "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/"
+            "csse_covid_19_data/csse_covid_19_daily_reports/03-30-2020.csv"
+        )
+        self.sample_url = (
+            "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/"
+            "csse_covid_19_data/csse_covid_19_daily_reports/07-19-2020.csv"
+        )
+
+        # GeoJSON file path and URL
+        self.geojson_url = (
+            "https://raw.githubusercontent.com/plotly/datasets/master/"
+            "geojson-counties-fips.json"
+        )
+        self.geojson_path = "geojson-counties-fips.json"
+
+        # Initialize data containers
+        self.missing_fips: pd.DataFrame = pd.DataFrame()
+        self.df_sample: pd.DataFrame = pd.DataFrame()
+        self.df_sample_r: pd.DataFrame = pd.DataFrame()
+        self.fig: px.choropleth = px.choropleth()
+
+    def setup_logger(self):
+        """Configure logging to only output to console"""
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler()
+            ]
+        )
+        logging.info("Logger configured")
+
+    def load_data(self) -> None:
+        """Load raw data from CSV sources"""
+        try:
+            logging.info("Loading data from URLs...")
+            self.missing_fips = pd.read_csv(self.missing_fips_url)
+            self.df_sample = pd.read_csv(self.sample_url)
+            logging.info("Successfully loaded data")
+        except Exception as e:
+            logging.error(f"Failed to load data: {e}")
+            raise
+
+    def prepare_data(self) -> None:
+        """Process and combine dataframes"""
+        try:
+            logging.info("Preparing data...")
+            # Calculate death percentages
+            self.missing_fips['Death_Percentage'] = (
+                    self.missing_fips['Deaths'] / self.missing_fips['Confirmed'] * 100
+            )
+            self.df_sample['Death_Percentage'] = (
+                    self.df_sample['Death'] / self.df_sample['Confirmed'] * 100
+            )
+
+            # Filter by state names
+            self.missing_fips_r = self.missing_fips[
+                self.missing_fips['Province_State'].isin(self.state_names)
+            ].fillna(0)
+            self.df_sample_r = self.df_sample[
+                self.missing_fips['Province_State'].isin(self.state_names)
+            ].fillna(0)
+
+            # Remove FIPS 0 and combine data
+            self.missing_fips_r = self.missing_fips_r[
+                ~self.missing_fips_r.FIPS.isin(self.df_sample_r.FIPS)
+            ].dropna()
+            self.df_sample_r = pd.concat([self.df_sample_r, self.missing_fips_r])
+
+            # Remove FIPS=0
+            self.df_sample_r = self.df_sample_r[~self.df_sample_r.FIPS.isin([0])]
+            logging.info(f"Filtered {len(self.df_sample_r)} counties")
+        except Exception as e:
+            logging.error(f"Data preparation failed: {e}")
+            raise
+
+    def download_geojson(self) -> None:
+        """Download GeoJSON file if it doesn't exist"""
+        if not os.path.exists(self.geojson_path):
+            logging.info(f"GeoJSON file not found. Downloading from {self.geojson_url}...")
+            try:
+                response = requests.get(self.geojson_url, timeout=10)
+                response.raise_for_status()
+                with open(self.geojson_path, 'wb') as f:
+                    f.write(response.content)
+                logging.info(f"Successfully downloaded {self.geojson_path}")
+            except Exception as e:
+                logging.error(f"Failed to download GeoJSON: {e}")
+                raise
+
+    def create_choropleth(self) -> None:
+        """Create the choropleth map visualization"""
+        try:
+            self.download_geojson()  # Ensure GeoJSON file exists
+
+            logging.info("Loading GeoJSON file...")
+            with open(self.geojson_path, 'r') as f:
+                counties = json.load(f)
+            logging.info("GeoJSON loaded successfully")
+
+            # Calculate state totals
+            state_totals = self.df_sample_r.groupby('Province_State')['Death'].sum()
+            self.df_sample_r['State_Deaths_Total'] = self.df_sample_r['Province_State'].map(state_totals)
+
+            # Create death bins
+            bins_edges = [1, 5, 25, 100, 500, float('inf')]
+            bin_labels = ['1-5', '6-25', '26-100', '101-500', '500+']
+            self.df_sample_r['Death_Bin'] = '0'
+
+            mask_pos = self.df_sample_r['Death'] > 0
+            if mask_pos.any():
+                self.df_sample_r.loc[mask_pos, 'Death_Bin'] = pd.cut(
+                    self.df_sample_r.loc[mask_pos, 'Death'],
+                    bins=bins_edges,
+                    labels=bin_labels,
+                    right=True,
+                    include_lowest=True
+                ).astype(str)
+
+            # Color mapping
+            color_map = {
+                '0': '#444444',
+                '1-5': '#5b2a86',
+                '6-25': '#3b4cc0',
+                '26-100': '#1fa187',
+                '101-500': '#55c667',
+                '500+': '#fde725'
+            }
+
+            # Create choropleth
+            self.fig = px.choropleth(
+                self.df_sample_r,
+                geojson=counties,
+                locations='FIPS',
+                color='Death_Bin',
+                scope='usa',
+                color_discrete_map=color_map,
+                category_orders={'Death_Bin': ['0'] + bin_labels},
+                labels={'Death_Bin': f'County deaths (bins) — {self.date}'},
+                custom_data=['Province_State', 'Admin2', 'Death', 'FIPS', 'State_Deaths_Total', 'Death_Bin']
+            )
+
+            # Update traces
+            self.fig.update_traces(
+                marker_line_width=0.5,
+                marker_line_color='rgb(255,255,255)',
+                hovertemplate='State: %{customdata[0]}<br>'
+                              'County: %{customdata[1]}<br>'
+                              'FIPS: %{customdata[3]}<br>'
+                              'County deaths: %{customdata[2]:,} (%{customdata[5]})<br>'
+                              'State deaths total: %{customdata[4]:,}'
+                              '<extra></extra>'
+            )
+            logging.info("Choropleth created successfully")
+        except Exception as e:
+            logging.error(f"Choropleth creation failed: {e}")
+            raise
+
+    def update_layout(self) -> None:
+        """Update figure layout and styling"""
+        try:
+            self.fig.update_layout(
+                legend_title_text=f'County deaths (bins) — {self.date}',
+                legend_x=0,
+                annotations=[{
+                    'x': -0.12,
+                    'y': 1.0,
+                    'xref': 'paper',
+                    'yref': 'paper',
+                    'xanchor': 'left',
+                    'showarrow': False
+                }],
+                template='plotly_dark'
+            )
+            logging.info("Layout updated successfully")
+        except Exception as e:
+            logging.error(f"Layout update failed: {e}")
+            raise
+
+    def save_figure(self, output_path: Optional[str] = None) -> None:
+        """Save figure as PNG image using kaleido"""
+        try:
+            if output_path is None:
+                output_path = f"covid_choropleth_{self.date}.png"
+
+            self.fig.write_image(output_path, width=1200, height=800, scale=2, format="png")
+            logging.info(f"Successfully saved {output_path}")
+        except Exception as e:
+            logging.error(f"Image export failed: {e}")
+            raise
+
+    def get_top_counties(self, n: int = 25) -> pd.DataFrame:
+        """Get top N counties by deaths"""
+        try:
+            return self.df_sample_r.nlargest(n, 'Death')[[
+                'Admin2', 'Province_State', 'Death'
+            ]]
+        except Exception as e:
+            logging.error(f"Failed to get top counties: {e}")
+            raise
+
+    def generate_report(self) -> None:
+        """Execute complete analysis workflow"""
+        try:
+            logging.info("Starting report generation...")
+            self.load_data()
+            self.prepare_data()
+            self.create_choropleth()
+            self.update_layout()
+            self.save_figure()
+
+            top_counties = self.get_top_counties()
+            logging.info("Top counties by deaths:")
+            logging.info(top_counties.to_string())
+
+            logging.info("Report generation completed successfully")
+        except Exception as e:
+            logging.critical(f"Report generation failed: {e}")
+            raise
 
 
-#state_names = ['Virginia','North Carolina', 'South Carolina']
-state_names = ["Alabama", "Arkansas", "Arizona", "California", "Colorado", "Connecticut", "District ", "of Columbia", "Delaware", "Florida", "Georgia", "Iowa", "Idaho", "Illinois", "Indiana", "Kansas", "Kentucky", "Louisiana", "Massachusetts", "Maryland", "Maine", "Michigan", "Minnesota", "Missouri", "Mississippi", "Montana", "North Carolina", "North Dakota", "Nebraska", "New Hampshire", "New Jersey", "New Mexico", "Nevada", "New York", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Virginia", "Vermont", "Washington", "Wisconsin", "West Virginia", "Wyoming"]
-missing_fips = pd.read_csv('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/03-30-2020.csv')
-df_sample = pd.read_csv('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/07-19-2020.csv')
-df_sample['Death_Percentage'] = (df_sample['Deaths'] / df_sample['Confirmed']) *100
-df_sample_r = df_sample[df_sample['Province_State'].isin(state_names)].fillna(0)
-missing_fips['Death_Percentage'] = (missing_fips['Deaths'] / missing_fips['Confirmed']) *100
-missing_fips_r = missing_fips[missing_fips['Province_State'].isin(state_names)].fillna(0)
-missing_fips_r = missing_fips_r[~missing_fips_r.FIPS.isin(df_sample_r.FIPS)].dropna()
-df_sample_r = pd.concat([df_sample_r, missing_fips_r])
-
-
-# In[3]:
-
-
-df_sample_r.loc[df_sample_r.Admin2 == 'Highland']
-
-
-# In[4]:
-
-
-date = "07-19-2020"
-df_sample_r = df_sample_r[~df_sample_r.FIPS.isin([0])]
-#df_sample_r = df_sample_r[df_sample_r.Confirmed > 300]
-#values = df_sample_r['Confirmed'].tolist()
-values = df_sample_r['Deaths'].tolist()
-#values = df_sample_r['Active'].tolist()
-#values = df_sample_r['Death_Percentage'].tolist()
-fips = df_sample_r['FIPS'].tolist()
-
-
-# In[5]:
-
-
-sum(values)/len(values)
-
-
-# In[6]:
-
-
-colorscale = [
-    'rgb(68.0, 1.0, 84.0)',
-    'rgb(66.0, 64.0, 134.0)',
-    'rgb(38.0, 130.0, 142.0)',
-    'rgb(63.0, 188.0, 115.0)',
-    'rgb(216.0, 226.0, 25.0)'
-]
-
-
-# In[7]:
-
-
-# Load US counties GeoJSON for Plotly Express choropleth
-with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
-    counties = json.load(response)
-
-# Build choropleth using Plotly Express (only change from original)
-# Compute state totals for hover info
-state_totals = df_sample_r.groupby('Province_State')['Deaths'].sum()
-df_sample_r = df_sample_r.copy()
-df_sample_r['State_Deaths_Total'] = df_sample_r['Province_State'].map(state_totals)
-
-# Create discrete bins for improved readability
-bins_edges = [1, 5, 25, 100, 500, float('inf')]
-bin_labels = ['1-5', '6-25', '26-100', '101-500', '500+']
-# Start with all zeros labeled explicitly
-df_sample_r['Deaths_Bin'] = '0'
-mask_pos = df_sample_r['Deaths'] > 0
-if mask_pos.any():
-    df_sample_r.loc[mask_pos, 'Deaths_Bin'] = pd.cut(
-        df_sample_r.loc[mask_pos, 'Deaths'],
-        bins=bins_edges,
-        labels=bin_labels,
-        right=True,
-        include_lowest=True
-    ).astype(str)
-
-# Discrete color palette (purple -> blue -> teal -> green -> yellow), plus gray for 0
-bin_order = ['0'] + bin_labels
-color_map = {
-    '0': '#444444',
-    '1-5': '#5b2a86',
-    '6-25': '#3b4cc0',
-    '26-100': '#1fa187',
-    '101-500': '#55c667',
-    '500+': '#fde725'
-}
-
-fig = px.choropleth(
-    df_sample_r,
-    geojson=counties,
-    locations='FIPS',
-    color='Deaths_Bin',
-    scope='usa',
-    color_discrete_map=color_map,
-    category_orders={'Deaths_Bin': bin_order},
-    labels={'Deaths_Bin': 'County deaths (bins) — %s' % date},
-    custom_data=['Province_State','Admin2','Deaths','FIPS','State_Deaths_Total','Deaths_Bin']
-)
-# Match county outline from original and enrich hover
-fig.update_traces(marker_line_width=0.5, marker_line_color='rgb(255,255,255)')
-fig.update_traces(hovertemplate='State: %{customdata[0]}<br>'
-                               'County: %{customdata[1]}<br>'
-                               'FIPS: %{customdata[3]}<br>'
-                               'County deaths: %{customdata[2]:,}<br>'
-                               'State deaths total: %{customdata[4]:,}'
-                               '<extra></extra>')
-
-# Switch hover to show both the exact count and the bin label; use categorical legend
-fig.update_traces(hovertemplate='State: %{customdata[0]}<br>'
-                               'County: %{customdata[1]}<br>'
-                               'FIPS: %{customdata[3]}<br>'
-                               'County deaths: %{customdata[2]:,} (%{customdata[5]})<br>'
-                               'State deaths total: %{customdata[4]:,}'
-                               '<extra></extra>')
-
-# Legend styling (categorical legend for bins)
-fig.update_layout(
-    legend_title_text='County deaths (bins) — %s' % date,
-    legend_traceorder='normal'
-)
-
-
-# In[8]:
-
-
-fig.update_layout(
-    legend_x=0,
-    annotations=[{
-        'x': -0.12,
-        'y': 1.0,
-        'xref': 'paper',
-        'yref': 'paper',
-        'xanchor': 'left',
-        'showarrow': False
-    }],
-    template='plotly_dark'
-)
-
-# Export PNG image
-output_path = f"covid_choropleth_{date}.png"
-try:
-    fig.write_image(output_path, width=1200, height=800, scale=2)
-    print(f"Wrote {output_path}")
-except Exception as e:
-    print(f"Image export failed: {e}")
-
-
-# In[9]:
-
-
-df_sample_r.nlargest(25, 'Deaths')[[
-    'Admin2','Province_State','Deaths'
-]]
-
-
-# In[ ]:
-
-
-
+if __name__ == "__main__":
+    try:
+        mapper = CoronaMapper(date="07-19-2020")
+        mapper.generate_report()
+    except Exception as e:
+        logging.critical(f"Application failed: {e}")

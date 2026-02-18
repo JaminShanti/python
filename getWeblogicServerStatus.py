@@ -1,134 +1,197 @@
 import sys
-import getopt
 import os
+import argparse
+import logging
 from datetime import datetime
 
+# Configure logging
+logger = logging.getLogger('WebLogicStatus')
 
-def usage():
-    print "Usage:"
-    print "getWeblogicServerStatus.py [--vsName virtual_Server_Name] [--listenAddress listen_Address] " \
-          "[--port listen_Port] [--adminURL admin_URL] [--application applicaitonName]"
+def setup_logger(verbose=False):
+    """
+    Sets up the logger with the specified verbosity.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    
+    # Create console handler
+    handler = logging.StreamHandler(sys.stdout)
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(handler)
+    logger.setLevel(level)
 
+def connect_weblogic_domain(username, password, admin_url):
+    """
+    Connects to the WebLogic Admin Server.
+    """
+    logger.info("Connecting to '%s' as '%s'", admin_url, username)
+    try:
+        # WLST connect function (available in WLST environment)
+        connect(username, password, admin_url)
+        logger.info("Successfully connected to WebLogic Domain.")
+    except Exception as e:
+        logger.error("Failed to connect to WebLogic Domain: %s", e)
+        sys.exit(1)
 
-def connect_weblogic_domain():
-    print "Connecting to '%s' as '%s" % (adminURL,username)
-    connect(username, password, adminURL)
+def get_server_state(server_name):
+    """
+    Retrieves the runtime state of a specific server.
+    Switches to domainRuntime tree and back.
+    """
+    state = "undefined"
+    try:
+        # Capture current tree to restore later
+        # In WLST, currentTree() returns the current MBean tree object.
+        previous_tree = currentTree()
+        
+        # Switch to domainRuntime to get runtime status
+        domainRuntime()
+        
+        # Navigate to ServerLifeCycleRuntimes
+        cd('ServerLifeCycleRuntimes/' + server_name)
+        state = cmo.getState()
+        
+    except Exception as e:
+        logger.debug("Could not get state for server '%s'. It might be down or unreachable. Error: %s", server_name, e)
+        state = "undefined"
+    finally:
+        # Restore original tree
+        try:
+            previous_tree()
+        except Exception:
+            # Fallback if previous_tree() is not callable, try switching to serverConfig
+            try:
+                serverConfig()
+            except:
+                pass
+            
+    return state
 
+def get_target_servers(app_name):
+    """
+    Navigates the AppDeployments tree to find target servers and their statuses.
+    """
+    instance_list = []
+    deployment_path = "AppDeployments/%s" % app_name
+    
+    logger.info("Navigating to deployment path: %s", deployment_path)
+    
+    try:
+        cd(deployment_path)
+    except Exception as e:
+        logger.error("Application '%s' not found or path invalid: %s", app_name, e)
+        return instance_list
 
-def getTargetServers(childNodeName):
-    instanceList = []
-    cd(childNodeName)
-    childNodeListing = ls(returnMap='true', returnType='c')
-    if childNodeListing.size() > 0:
-        for childNode in childNodeListing:
-            if childNode == 'Targets':
-                print("\t\t change directory to: '%s'" % childNode)
-                cd(childNode)
-                # added for cluster support
-                clusterNames = ls(returnMap='true', returnType='c')
-                if clusterNames.size() > 0:
-                    for clusterNm in clusterNames:
-                        print("\t\t change directory to: '%s'" % clusterNm)
-                        cd(clusterNm)
-                        clusterNodeListing = ls(returnMap='true', returnType='c')
-                        for clusterNode in clusterNodeListing:
-                            if clusterNode == 'Servers':
-                                print("\t\t change directory to: '%s'" % clusterNode)
-                                cd(clusterNode)
-                                serverNames = ls(returnMap='true', returnType='c')
-                                if serverNames.size() > 0:
-                                    for srvrNm in serverNames:
-                                        print("\t\t change directory to: '%s'" % srvrNm)
-                                        cd(srvrNm)
-                                        print("\t\t change directory to: '%s'" % 'Machine')
-                                        cd('Machine')
-                                        machineNm = ls(returnMap='true', returnType='c')
-                                        if not machineNm:
-                                            machineNm += ["undefined"]
-                                        # way to much work to get server status
-                                        myTree = currentTree()
-                                        domainRuntime()
-                                        cd('ServerLifeCycleRuntimes/' + srvrNm)
-                                        stateNm = cmo.getState()
-                                        myTree()
-                                        instanceList.append(
-                                            ["generic-application", clusterNm, srvrNm, machineNm[0], stateNm])
-                                        cd('..')
-                                        cd('..')
-                            if clusterNode == 'Machine':
-                                # clusternode is actually a Container/srvrNm
-                                srvrNm = clusterNm
-                                print("\t\t ServerName: '%s'" % srvrNm)
-                                print("\t\t change directory to: '%s'" % 'Machine')
-                                cd('Machine')
-                                machineNm = ls(returnMap='true', returnType='c')
-                                if not machineNm:
-                                    machineNm += ["undefined"]
-                                # way to much work to get server status
-                                myTree = currentTree()
-                                domainRuntime()
-                                cd('ServerLifeCycleRuntimes/' + srvrNm)
-                                stateNm = cmo.getState()
-                                try:
-                                    stateNm
-                                except IndexError:
-                                    stateNm = "undefined"
-                                myTree()
-                                instanceList.append(
-                                    ["generic-application", "noCluster", srvrNm, machineNm[0], stateNm])
-                                cd('..')
-                        cd('..')
-                        cd('..')
-                cd('..')
-                # navigate to parent of Targets node
-        cd('..')
-    # navigate back to parent attribute
-    cd('..')
-    return instanceList
+    try:
+        # List children of the application node
+        child_nodes = ls(returnMap='true', returnType='c')
+        
+        if 'Targets' in child_nodes:
+            logger.debug("Found 'Targets' node.")
+            cd('Targets')
+            
+            # List clusters or servers targeted
+            targets = ls(returnMap='true', returnType='c')
+            
+            for target_name in targets:
+                logger.debug("Processing target: %s", target_name)
+                cd(target_name)
+                
+                sub_nodes = ls(returnMap='true', returnType='c')
+                
+                if 'Servers' in sub_nodes:
+                    # It is a Cluster
+                    logger.debug("Target '%s' is a Cluster.", target_name)
+                    cd('Servers')
+                    servers = ls(returnMap='true', returnType='c')
+                    
+                    for server_name in servers:
+                        logger.debug("Processing server in cluster: %s", server_name)
+                        cd(server_name)
+                        
+                        machine_name = "undefined"
+                        if 'Machine' in ls(returnMap='true', returnType='c'):
+                            cd('Machine')
+                            machines = ls(returnMap='true', returnType='c')
+                            if machines:
+                                machine_name = machines[0]
+                            cd('..') # Back to server
+                        
+                        state = get_server_state(server_name)
+                        instance_list.append([app_name, target_name, server_name, machine_name, state])
+                        
+                        cd('..') # Back to Servers
+                    
+                    cd('..') # Back to Cluster
+                    
+                elif 'Machine' in sub_nodes:
+                    # It is a standalone Server
+                    server_name = target_name
+                    logger.debug("Target '%s' is a Standalone Server.", server_name)
+                    
+                    machine_name = "undefined"
+                    cd('Machine')
+                    machines = ls(returnMap='true', returnType='c')
+                    if machines:
+                        machine_name = machines[0]
+                    cd('..') # Back to server
+                    
+                    state = get_server_state(server_name)
+                    instance_list.append([app_name, "noCluster", server_name, machine_name, state])
+                
+                cd('..') # Back to Targets
+            
+            cd('..') # Back to AppDeployments/AppName
+            
+        # Navigate back to AppDeployments
+        cd('..') 
+        
+    except Exception as e:
+        logger.error("Error traversing targets: %s", e)
+        
+    return instance_list
 
+def parse_arguments():
+    """
+    Parses command line arguments using argparse.
+    """
+    parser = argparse.ArgumentParser(description="Get WebLogic Server Status for an Application")
+    
+    parser.add_argument("-u", "--username", dest="username", help="Console User Name", 
+                        default=os.getenv('WL_ADMIN_USERNAME'))
+    parser.add_argument("-p", "--password", dest="password", help="Console Password", 
+                        default=os.getenv('WL_ADMIN_PASSWORD'))
+    parser.add_argument("-a", "--adminURL", dest="adminURL", help="Admin URL (e.g. t3://localhost:7001)", 
+                        default=os.getenv('WL_ADMIN_T3_URL'))
+    parser.add_argument("-i", "--application", dest="application", help="Application Name", 
+                        default="generic-application")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
 
-# ===== Sourcing content from Environemnt settings ===================
-try:
-    username = os.getenv('WL_ADMIN_USERNAME')
-    password = os.getenv('WL_ADMIN_PASSWORD')
-    adminURL = os.getenv('WL_ADMIN_T3_URL')
-    applicationName= "generic-application"
-except:
-    pass
-# ====== Main program ===============================
-try:
-    opts, args = getopt.getopt(sys.argv[1:], "u:p:a:i:",
-                               ["consoleUserName=", "consolePassword=", "adminURL=","application="])
-except getopt.GetoptError, err:
-    print str(err)
-    usage()
-    sys.exit(2)
+    return parser.parse_args()
 
-for opt, arg in opts:
-    if opt in ("-u", "--consoleUserName"):
-        username = arg
-    elif opt in ("-p", "--consolePassword"):
-        password = arg
-    elif opt in ("-a", "--adminURL"):
-        adminURL = arg
-    elif opt in ("-i", "--application"):
-        applicationName = arg
+def main():
+    args = parse_arguments()
+    
+    setup_logger(args.verbose)
+    
+    if not args.username or not args.password or not args.adminURL:
+        logger.error("Missing required credentials/URL. Set environment variables (WL_ADMIN_USERNAME, WL_ADMIN_PASSWORD, WL_ADMIN_T3_URL) or provide arguments.")
+        sys.exit(1)
+        
+    logger.info("Starting WebLogic Server Status Check")
+    
+    connect_weblogic_domain(args.username, args.password, args.adminURL)
+    
+    server_array = get_target_servers(args.application)
+    
+    logger.info("Status Check Complete.")
+    logger.info("Output:")
+    for row in server_array:
+        logger.info(row)
 
-
-# verify environemnt variables are defined.d
-try:
-    username
-    password
-    adminURL
-except NameError:
-    print "Error: Environment Variables not Set..."
-    sys.exit(1)
-else:
-    print "Environment Variables set..."
-print("getWeblogicServerStatus")
-print (datetime.today())
-connect_weblogic_domain()
-serverArray = getTargetServers("AppDeployments/%s" % applicationName)
-print (datetime.today())
-print("start output here:")
-print(serverArray)
+if __name__ == "__main__":
+    main()
