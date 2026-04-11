@@ -4,261 +4,190 @@ import yfinance as yf
 import re
 import pandas as pd
 from tqdm import tqdm
-from datetime import date, timedelta
-from contextlib import redirect_stdout
+from datetime import date, datetime, timedelta
 import os
 import io
 import logging
 import requests
-from pandas.tseries.offsets import BDay
-import imgkit
-from IPython.display import Image
+import time
+import random
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Suppress yfinance internal noise
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
 class NyseTrendingReport:
     """
-    A class to generate a trending report for S&P 500 stocks based on
-    recent market performance.
+    Stabilized Dividend Report. 
+    Uses rate-limit protection and robust Wikipedia scraping.
     """
 
-    def __init__(self, cache_path='sp500_symbols.csv', 
-                 wkhtmltoimage_path=r'C:\Program Files\wkhtmltopdf\bin\wkhtmltoimage.exe'):
-        self.cache_path = cache_path
-        self.wkhtmltoimage_path = wkhtmltoimage_path
-        self.trap = io.StringIO()
-        
-        # Date calculations
-        today = date.today()
-        self.compare_market_close = (today - BDay(2)).strftime("%Y-%m-%d")
-        self.market_last_close_add_a_day = today.strftime("%Y-%m-%d")
-        
-        logger.info(f"Report Date Range: {self.compare_market_close} to {self.market_last_close_add_a_day}")
-
+    def __init__(self, cache_path='market_symbols.csv'):
+        self.cache_path = os.path.abspath(cache_path)
         self.market_data = pd.DataFrame()
-        self.top_performers = pd.DataFrame()
-
-    def get_sp500_symbols(self):
-        """
-        Fetches S&P 500 symbols from Wikipedia or a local cache.
-        """
-        wiki_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        symbols = []
+        self.final_report = pd.DataFrame()
+        self.symbol_index_map = {}
+        self.months = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", 
+                       "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"]
         
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
+
+    def _get_wikipedia_table(self, url, match_str):
         try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            resp = requests.get(wiki_url, headers=headers, timeout=20)
+            resp = self.session.get(url, timeout=20)
             resp.raise_for_status()
-            tables = pd.read_html(io.StringIO(resp.text), match='Symbol')
-            df = tables[0]
-            col = 'Symbol' if 'Symbol' in df.columns else df.columns[0]
-            symbols = df[col].astype(str).tolist()
-            symbols = [re.sub(r'\.', '-', s) for s in symbols]
+            # Force html.parser to avoid missing dependency issues
+            tables = pd.read_html(io.StringIO(resp.text), match=match_str, flavor='bs4')
+            df = max(tables, key=len)
             
-            # Cache to disk
-            pd.DataFrame({'symbol': symbols}).to_csv(self.cache_path, index=False)
-            logger.info(f"Fetched {len(symbols)} symbols from Wikipedia.")
-            
+            ticker_col = next((col for col in df.columns if any(x in col for x in ['Symbol', 'Ticker', 'Ticker symbol'])), None)
+            if ticker_col is None: return []
+
+            raw_symbols = [str(s).strip().split()[0].upper() for s in df[ticker_col].tolist()]
+            clean_symbols = []
+            for s in raw_symbols:
+                s = re.sub(r'\.', '-', s)
+                if re.match(r'^[A-Z-]{1,5}$', s) and s not in self.months:
+                    clean_symbols.append(s)
+            return list(set(clean_symbols))
         except Exception as e:
-            logger.warning(f"Failed to fetch from Wikipedia: {e}. Trying cache.")
-            if os.path.exists(self.cache_path):
-                try:
-                    df = pd.read_csv(self.cache_path)
-                    col = 'symbol' if 'symbol' in df.columns else df.columns[0]
-                    symbols = df[col].astype(str).tolist()
-                    logger.info(f"Loaded {len(symbols)} symbols from cache.")
-                except Exception as ex:
-                    logger.error(f"Failed to load from cache: {ex}")
-            else:
-                logger.error("No cache file found.")
+            logger.debug(f"Failed to fetch from {url}: {e}")
+            return []
+
+    def get_all_symbols_with_indices(self):
+        if os.path.exists(self.cache_path):
+            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(self.cache_path))
+            if file_age < timedelta(days=30):
+                cache_df = pd.read_csv(self.cache_path)
+                if 'symbol' in cache_df.columns and 'index' in cache_df.columns:
+                    logger.info("Using cached market symbols.")
+                    self.symbol_index_map = dict(zip(cache_df['symbol'], cache_df['index']))
+                    return cache_df['symbol'].tolist()
+
+        logger.info("SSD Cache expired. Fetching fresh S&P 500, 400, and 600 lists...")
+        indices = {
+            'S&P 500': ('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', 'Symbol'),
+            'S&P 400': ('https://en.wikipedia.org/wiki/List_of_S%26P_400_companies', 'Ticker symbol'),
+            'S&P 600': ('https://en.wikipedia.org/wiki/List_of_S%26P_600_companies', 'Ticker symbol')
+        }
+        
+        all_data = []
+        for index_name, (url, match) in indices.items():
+            symbols = self._get_wikipedia_table(url, match)
+            if symbols:
+                logger.info(f"Retrieved {len(symbols)} tickers for {index_name}")
+                for s in symbols:
+                    all_data.append({'symbol': s, 'index': index_name})
+        
+        if not all_data:
+            logger.error("No symbols retrieved. Check internet or dependencies.")
+            return []
+
+        df = pd.DataFrame(all_data).drop_duplicates(subset=['symbol'], keep='first')
+        df.to_csv(self.cache_path, index=False)
+        self.symbol_index_map = dict(zip(df['symbol'], df['index']))
+        return df['symbol'].tolist()
+
+    def fetch_stock_details(self, symbol):
+        """Worker to get dividend info with built-in retry and delay."""
+        # Random sleep to avoid pattern-based rate limiting
+        time.sleep(random.uniform(0.2, 0.8))
+        
+        for attempt in range(2): # Try twice
+            try:
+                t = yf.Ticker(symbol, session=self.session)
+                info = t.info
+                div_yield = info.get('dividendYield', 0)
+                if div_yield is None: div_yield = 0
                 
-        return symbols
+                # We also need price
+                hist = t.history(period="2d")
+                price = hist['Close'].iloc[-1] if not hist.empty else 0
+                
+                return {
+                    'Symbol': symbol,
+                    'Name': info.get('longName', 'N/A'),
+                    'Index': self.symbol_index_map.get(symbol, 'N/A'),
+                    'Price': price,
+                    'Div Yield (%)': round(div_yield * 100, 2),
+                    'Sector': info.get('sector', 'N/A'),
+                    '52W High': info.get('fiftyTwoWeekHigh', 0),
+                    'P/E Ratio': info.get('trailingPE', 'N/A')
+                }
+            except Exception:
+                if attempt == 0:
+                    time.sleep(2) # Wait a bit more on first fail
+                continue
+        return None
 
     def collect_market_data(self, symbols):
-        """
-        Downloads market data for the given symbols and calculates percentage change.
-        """
-        market_list = []
-        error_list = {}
+        logger.info(f"Collecting dividend data for {len(symbols)} stocks (throttled for safety)...")
         
-        logger.info("Starting market data collection...")
+        results = []
+        # Lowered workers to 5 to avoid 401/Rate Limit blocks
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            list_results = list(tqdm(executor.map(self.fetch_stock_details, symbols), total=len(symbols)))
         
-        for symbol in tqdm(symbols, position=0, leave=True):
-            data_row = {}
-            with redirect_stdout(self.trap):  
-                try:
-                    # Download data
-                    company_trend = yf.download(symbol, start=self.compare_market_close, 
-                                              end=self.market_last_close_add_a_day,
-                                              threads=False, progress=False)
-                    
-                    if company_trend is None or company_trend.empty:
-                        error_list[symbol] = "no data"
-                        continue
+        results = [r for r in list_results if r is not None]
+        self.market_data = pd.DataFrame(results)
+        logger.info(f"Successfully processed {len(self.market_data)} stocks.")
 
-                    # Normalize index
-                    if not isinstance(company_trend.index, pd.DatetimeIndex):
-                        company_trend.index = pd.to_datetime(company_trend.index, errors='coerce')
-                        company_trend = company_trend[company_trend.index.notna()]
+    def filter_and_rank(self, top_n=100):
+        if self.market_data.empty: return
+        # Filter: Div Yield > 1.5% (Ryder is around 2%)
+        self.final_report = self.market_data[self.market_data['Div Yield (%)'] > 1.5]
+        self.final_report = self.final_report.sort_values(by=['Div Yield (%)', 'Price'], ascending=[False, False]).head(top_n)
 
-                    # Filter window
-                    start_dt = pd.to_datetime(self.compare_market_close)
-                    end_dt = pd.to_datetime(self.market_last_close_add_a_day)
-                    window = company_trend.loc[(company_trend.index >= start_dt) & (company_trend.index < end_dt)]
-
-                    if window.empty or 'Close' not in window:
-                        error_list[symbol] = "no window/close"
-                        continue
-
-                    # Calculate change
-                    # Handle potential MultiIndex columns if yfinance returns them
-                    close_series = window['Close']
-                    if isinstance(close_series, pd.DataFrame):
-                         close_series = close_series.iloc[:, 0]
-
-                    compare_price = close_series.iloc[0]
-                    close_price = close_series.iloc[-1]
-                    
-                    stock_change_percentage = (close_price / compare_price) * 100 - 100
-                    
-                    data_row['symbol'] = symbol
-                    data_row['stock_change_percentage'] = stock_change_percentage
-                    data_row['close_price'] = close_price
-                    market_list.append(data_row)
-                    
-                except Exception as e: 
-                    error_list[symbol] = str(e)
-
-        if error_list:
-            logger.debug(f"Errors encountered for {len(error_list)} symbols.")
-
-        self.market_data = pd.DataFrame(market_list)
-        if not self.market_data.empty:
-            self.market_data.set_index('symbol', inplace=True)
-        else:
-            logger.error("No valid data collected.")
-
-    def process_top_performers(self, top_n=25):
-        """
-        Identifies top performers and fetches additional details.
-        """
-        if self.market_data.empty:
-            logger.warning("Market data is empty. Cannot process top performers.")
+    def generate_report(self):
+        if self.final_report.empty:
+            logger.warning("No dividend stocks matching criteria found.")
             return
-
-        logger.info(f"Identifying top {top_n} performers...")
-        top_performers = self.market_data.nlargest(top_n, ['stock_change_percentage'])
-        
-        top_info_list = []
-        for symbol, _ in tqdm(top_performers.iterrows(), total=top_performers.shape[0], position=0, leave=True):
-            with redirect_stdout(self.trap):  
-                try:
-                    company = yf.Ticker(symbol).info
-                    # Keep only relevant info to avoid massive dataframes
-                    relevant_info = {
-                        'symbol': symbol,
-                        'longName': company.get('longName'),
-                        'fiftyTwoWeekHigh': company.get('fiftyTwoWeekHigh'),
-                        'sector': company.get('sector')
-                    }
-                    top_info_list.append(relevant_info)
-                except Exception as e:
-                    logger.error(f"Error fetching info for {symbol}: {e}")
-
-        info_df = pd.DataFrame(top_info_list)
-        if not info_df.empty:
-            info_df.set_index('symbol', inplace=True)
-            self.top_performers = pd.concat([info_df, top_performers], axis=1)
-        else:
-            self.top_performers = top_performers
-
-        # Clean up specific tickers if needed (legacy logic)
-        for exclude in ['MCC', 'FMO', 'SSI']:
-            if exclude in self.top_performers.index:
-                self.top_performers.drop(exclude, inplace=True)
-
-    def generate_report(self, output_html='table_report.html', output_img='table_report.jpg'):
-        """
-        Generates an HTML report and converts it to an image.
-        """
-        if self.top_performers.empty:
-            logger.warning("No top performers to report.")
-            return
-
-        logger.info("Generating report...")
-        
-        # Format for display
-        display_df = self.top_performers[['longName', 'stock_change_percentage', 'close_price', 'fiftyTwoWeekHigh', 'sector']].copy()
-        
-        # Apply formatting
+            
+        output_file = 'dividend_report.html'
         pd.options.display.float_format = "{:,.2f}".format
+        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sector', '52W High', 'P/E Ratio']
         
-        html_string = '''
+        html_content = f"""
         <html>
-          <head><title>NYSE Trending Report</title></head>
-          <link rel="stylesheet" type="text/css" href="df_style.css"/>
-          <style>
-            .mystyle {
-                font-family: Arial, sans-serif;
-                border-collapse: collapse;
-                width: 100%;
-            }
-            .mystyle td, .mystyle th {
-                border: 1px solid #ddd;
-                padding: 8px;
-            }
-            .mystyle tr:nth-child(even){background-color: #f2f2f2;}
-            .mystyle th {
-                padding-top: 12px;
-                padding-bottom: 12px;
-                text-align: left;
-                background-color: #4CAF50;
-                color: white;
-            }
-          </style>
-          <body>
-            <h2>Top Performing S&P 500 Stocks</h2>
-            {table}
-          </body>
+        <head>
+            <style>
+                body {{ font-family: 'Segoe UI', Arial; background-color: #121212; color: #e0e0e0; padding: 20px; }}
+                table {{ border-collapse: collapse; width: 100%; background-color: #1e1e1e; }}
+                th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #333; }}
+                th {{ background-color: #004d40; color: white; }}
+                tr:hover {{ background-color: #262626; }}
+                h2 {{ color: #4db6ac; }}
+            </style>
+        </head>
+        <body>
+            <h2>S&P 500/400/600 Dividend Performance Report ({date.today()})</h2>
+            <p>Scanning results for High Dividend candidates (>1.5% yield).</p>
+            {self.final_report[cols].to_html(index=False)}
+        </body>
         </html>
-        '''
-        
-        with open(output_html, 'w') as f:
-            f.write(html_string.format(table=display_df.to_html(classes='mystyle', float_format=lambda x: '{:,.2f}'.format(x))))
-        
-        logger.info(f"HTML report saved to {output_html}")
-
-        # Convert to Image
-        try:
-            config = imgkit.config(wkhtmltoimage=self.wkhtmltoimage_path)
-            imgkit.from_file(output_html, output_img, config=config, options={'enable-local-file-access': ''})
-            logger.info(f"Image report saved to {output_img}")
-        except OSError as e:
-            logger.error(f"Skipping image export: wkhtmltoimage not found or error occurred. {e}")
-        except Exception as e:
-            logger.error(f"An error occurred during image generation: {e}")
+        """
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        logger.info(f"Report generated: {output_file}")
 
     def run(self):
-        """
-        Executes the full reporting pipeline.
-        """
-        symbols = self.get_sp500_symbols()
-        if not symbols:
-            logger.error("No symbols found. Exiting.")
-            return
-
+        symbols = self.get_all_symbols_with_indices()
+        if not symbols: return
         self.collect_market_data(symbols)
-        self.process_top_performers()
+        self.filter_and_rank()
         self.generate_report()
 
 if __name__ == "__main__":
-    report = NyseTrendingReport()
-    report.run()
+    start = datetime.now()
+    NyseTrendingReport().run()
+    logger.info(f"Total Execution Time: {datetime.now() - start}")
