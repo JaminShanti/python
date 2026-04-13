@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 class MTGDipDetector:
     """
-    MTG Price Drop Detector v9.0
+    MTG Price Drop Detector v9.1
     Optimized for cEDH (EDHTop16) and EDH (EDHRec) staples.
-    Generates a professional-grade PDF report with improved layout.
+    Generates a professional-grade PDF report and TCGplayer-compatible import file.
     """
     def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=0.75, min_drop_pct=35.0, use_pickle_cache=True):
         self.cache_dir = os.path.abspath(cache_dir)
@@ -141,6 +141,44 @@ class MTGDipDetector:
                 
         return data
 
+    def generate_tcgplayer_import(self, df):
+        """Generates a text file formatted for TCGplayer Mass Entry with better compatibility."""
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        filename = f"TCGplayer_Import_{timestamp}.txt"
+        
+        # Mapping for common MTGJSON -> TCGplayer set code mismatches
+        set_map = {
+            'FCA': 'PIP',            # Fallout Commander
+            'PZA': 'PLST',           # The List (Often represented as PZA in some exports)
+            'SPG': 'Special Guests', # Special Guests
+            'MH3': 'Modern Horizons 3'
+        }
+        
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                for _, row in df.iterrows():
+                    # Handle Double Faced Cards: TCGplayer expects only the front half name
+                    # e.g. "Witch Enchanter // Witch-Blessed Meadow" -> "Witch Enchanter"
+                    full_name = row['Card Name']
+                    clean_name = full_name.split(' // ')[0]
+                    
+                    set_code = row['Set']
+                    
+                    # Apply mappings
+                    final_set = set_map.get(set_code, set_code)
+                    
+                    # Logic for problematic sets: If it's a known problematic code or 
+                    # one that often fails, it's safer to just provide the name.
+                    if set_code in ['PZA', 'FCA'] or len(final_set) > 3:
+                        # For long set names or PZA/FCA, try name only to allow TCGplayer to match
+                        f.write(f"1 {clean_name}\n")
+                    else:
+                        f.write(f"1 {clean_name} [{final_set}]\n")
+
+            logger.info(f"TCGplayer import file saved to: {os.path.abspath(filename)}")
+        except Exception as e:
+            logger.error(f"Failed to generate TCGplayer import file: {e}")
+
     def generate_pdf(self, df, high_label):
         """Generates both PDF and PNG report images with improved layout and card name fitting."""
         try:
@@ -212,7 +250,7 @@ class MTGDipDetector:
         
         plt.close()
 
-    def get_market_dips(self, export_pdf=True):
+    def get_market_dips(self, export_pdf=True, export_tcg=True):
         top16_set, rec_set = self._get_staples()
         all_staples = top16_set.union(rec_set)
         if not all_staples: return
@@ -279,8 +317,10 @@ class MTGDipDetector:
 
         if export_pdf:
             self.generate_pdf(report_df, high_label)
+        if export_tcg:
+            self.generate_tcgplayer_import(report_df)
 
 if __name__ == "__main__":
     start = datetime.now()
-    MTGDipDetector().get_market_dips(export_pdf=True)
+    MTGDipDetector().get_market_dips(export_pdf=True, export_tcg=True)
     logger.info(f"Total Run Time: {datetime.now() - start}")
