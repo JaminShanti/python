@@ -22,7 +22,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 - **`f5_node_health.py`**: Checks and reports on the health status of nodes within an F5 load balancer environment.
 
 ### Data Analysis & Reporting
-- **`NYSE Trending Report.py`**: Generates a trending report for S&P 500 stocks, identifying top performers based on recent market data and exporting results as HTML/Image.
+- **`NYSE Trending Report.py`**: Generates a high-performance dividend report for S&P 500, 400, and 600 stocks. Uses Yahoo Finance's bulk quote API for speed and exports reports as HTML/PDF.
 - **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time, generating visualization plots of daily performance.
 - **`rotten_tomato_user_reviews.py`**: Scrapes user reviews from Rotten Tomatoes for movies or TV shows, performs sentiment analysis (rating average), and generates word clouds.
 - **`Git_Log_Report.py`**: Analyzes a Git repository's history to generate reports on commit activity, authors, and file changes.
@@ -32,13 +32,21 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 - **`lastgitcommit.py`**: A utility to retrieve details about the most recent Git commit.
 - **`contact_bot/`**: A directory containing a bot implementation, possibly for automated messaging or interaction (e.g., Facebook Messenger).
 
+## Recent Commits
+- **1acc85d**: Updating Code changes for the year. (35 hours ago)
+- **6c2bef1**: Updating Code changes for the year. (8 weeks ago)
+- **9c2b1b8**: Updating Code changes for the year. (8 weeks ago)
+- **8bf3aa3**: Updating Code changes for the year. (8 weeks ago)
+- **0c5a50f**: Updating Code changes for the year. (3 months ago)
+
 ## How to Run
 Prerequisites:
 - Windows, Python 3.13+
 - `git` on PATH
-- Python packages: `GitPython`, `pandas`, `matplotlib`, `plotly`, `kaleido`, `boto3`, `requests`, `bigsuds`, `PyYAML`, `yfinance`, `numpy`, `tqdm`, `pandas-datareader`, `imgkit`, `IPython`, `paramiko`, `wordcloud`, `yagmail`, `tabulate`, `html2text`, `fbchat`
+- Python packages: `GitPython`, `pandas`, `matplotlib`, `plotly`, `kaleido`, `boto3`, `requests`, `bigsuds`, `PyYAML`, `yfinance`, `numpy`, `tqdm`, `pandas-datareader`, `imgkit`, `IPython`, `paramiko`, `wordcloud`, `yagmail`, `tabulate`, `html2text`, `fbchat`, `playwright`, `beautifulsoup4`
 
 Install:
 ```powershell
-pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds pyyaml yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat
+pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds pyyaml yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat playwright beautifulsoup4
+playwright install chromium
 ```
