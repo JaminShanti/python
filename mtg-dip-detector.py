@@ -4,8 +4,11 @@ import os
 import logging
 import json
 import re
+import gzip
+import time
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+from bs4 import BeautifulSoup
 
 # Configure logging
 logging.basicConfig(
@@ -16,166 +19,212 @@ logger = logging.getLogger(__name__)
 
 class MTGDipDetector:
     """
-    MTG Price Drop Detector optimized for cEDH and EDH Staples.
-    Filters by cards found on edhtop16.com/staples and edhrec.com/top.
-    Excludes basic lands.
+    MTG Price Drop Detector v8.5
+    Optimized for cEDH (EDHTop16) and EDH (EDHRec) staples.
+    Uses BeautifulSoup4 for robust extraction.
+    Merged reporting sorted by Drop %, with configurable filters.
+    Exclusively uses TCGplayer retail pricing.
     """
-    def __init__(self, cache_dir='mtg_cache'):
+    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=0.75, min_drop_pct=35.0):
+        """
+        Initialize the detector with configurable filters.
+        
+        :param cache_dir: Directory for storing cache files.
+        :param high_window_days: Number of days to look back for the "High" price (default 90).
+        :param min_drop_dollars: Minimum dollar amount of drop to include in results (default 0.75).
+        :param min_drop_pct: Minimum percentage drop to include in results (default 35.0).
+        """
         self.cache_dir = os.path.abspath(cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
+        
+        self.high_window_days = high_window_days
+        self.min_drop_dollars = min_drop_dollars
+        self.min_drop_pct = min_drop_pct
+        
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'MTG-Staple-Scanner/5.1'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Encoding': 'gzip'
         })
-        # Basic lands blocklist
         self.excluded_cards = {"mountain", "forest", "island", "swamp", "plains"}
+        self.illegal_sets = {
+            'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04', 
+            'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST'
+        }
+        
+        # Define TTLs in hours
+        self.TTL_STAPLES = 24       # Daily refresh for top lists
+        self.TTL_IDENTIFIERS = 168  # Weekly refresh (rarely changes)
+        self.TTL_PRICES = 24        # Daily refresh for pricing data
 
-    def _get_edhtop16_staples(self):
-        """Fetches cEDH staples from EDHTop16."""
-        logger.info("Fetching cEDH staples from EDHTop16...")
-        url = "https://edhtop16.com/api/staples"
+    def _extract_names_recursively(self, obj, found_set):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == 'name' and isinstance(v, str) and 3 < len(v) < 45:
+                    if not any(char.isdigit() for char in v): # Card names rarely have numbers
+                        found_set.add(v.lower().strip())
+                else:
+                    self._extract_names_recursively(v, found_set)
+        elif isinstance(obj, list):
+            for item in obj:
+                self._extract_names_recursively(item, found_set)
+
+    def _fast_harvest(self, url, found_set):
+        """Extracts data using BeautifulSoup and JSON blobs."""
         try:
-            response = self.session.get(url, timeout=30)
-            if response.status_code == 200:
-                return [item.get('name') for item in response.json() if item.get('name')]
+            r = self.session.get(url, timeout=20)
+            if r.status_code == 200:
+                # 1. Try Next.js JSON blob
+                json_match = re.search(r'id="__NEXT_DATA__".*?>(.*?)</script>', r.text, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group(1))
+                    self._extract_names_recursively(data, found_set)
+                
+                # 2. BeautifulSoup extraction
+                soup = BeautifulSoup(r.text, 'html.parser')
+                # Look for names in common container elements
+                for element in soup.find_all(['a', 'td', 'span', 'div']):
+                    text = element.get_text(strip=True)
+                    if 3 < len(text) < 45 and not any(c.isdigit() for c in text):
+                        # Filter out common UI noise
+                        if text.lower() not in {"staples", "rank", "count", "percent", "commander", "partner", "decklist", "filter", "share", "name", "price", "color", "type"}:
+                            found_set.add(text.lower())
+                return len(found_set) >= 25
         except Exception as e:
-            logger.warning(f"EDHTop16 API failed: {e}")
-        return []
+            logger.warning(f"Harvest failed for {url}: {e}")
+        return False
 
-    def _get_edhrec_top_cards(self):
-        """Fetches top cards from EDHREC."""
-        logger.info("Fetching top EDH cards from EDHREC...")
-        url = "https://edhrec.com/top"
-        try:
-            response = self.session.get(url, timeout=30)
-            if response.status_code == 200:
-                content = response.text
-                matches = re.findall(r'"name":"(.*?)"', content)
-                if matches:
-                    return list(set(matches))
-        except Exception as e:
-            logger.warning(f"EDHREC fetch failed: {e}")
-        return []
-
-    def _get_json_data(self, url, filename):
-        cache_path = os.path.join(self.cache_dir, filename)
-        if os.path.exists(cache_path):
-            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_path))
-            if file_age < timedelta(hours=24):
-                logger.info(f"Loading {filename} from SSD cache...")
+    def _get_staples(self):
+        edhtop16_staples = set()
+        edhrec_staples = set()
+        
+        cache_file = os.path.join(self.cache_dir, "staple_cache.json")
+        if os.path.exists(cache_file):
+            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+            if file_age < timedelta(hours=self.TTL_STAPLES):
                 try:
-                    with open(cache_path, 'r', encoding='utf-8') as f:
-                        return json.load(f).get("data", {})
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        t16, rec = data.get('top16', []), data.get('rec', [])
+                        if len(t16) >= 25:
+                            logger.info(f"Using cached staples: {len(t16)} cEDH, {len(rec)} EDH.")
+                            return set(t16), set(rec)
                 except: pass
 
-        logger.info(f"Downloading {filename}...")
-        try:
-            response = self.session.get(url, timeout=600)
-            response.raise_for_status()
-            full_data = response.json()
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(full_data, f)
-            return full_data.get("data", {})
-        except Exception as e:
-            logger.error(f"Error retrieving {filename}: {e}")
-            return {}
+        logger.info("Harvesting staples via BS4...")
+        self._fast_harvest("https://edhtop16.com/staples", edhtop16_staples)
+        self._fast_harvest("https://edhrec.com/top", edhrec_staples)
 
-    def process_card(self, uuid, name, prices_data, six_months_ago_str):
-        if uuid not in prices_data: return None
-        try:
-            paper_data = prices_data[uuid].get("paper", {})
-            price_history = paper_data.get("tcgplayer", {}).get("retail", {}).get("normal", {})
-            if not price_history:
-                price_history = paper_data.get("cardkingdom", {}).get("retail", {}).get("normal", {})
-            
-            if not price_history: return None
+        # Post-process cleanup
+        noise = {"staples", "rank", "count", "percent", "commander", "partner", "decklist", "filter", "share", "name", "price", "color", "type", "next", "previous", "search", "menu"}
+        edhtop16_staples = {s for s in edhtop16_staples if s not in noise}
 
-            recent_prices = [float(p) for d, p in price_history.items() if d >= six_months_ago_str]
-            if not recent_prices: return None
+        if len(edhtop16_staples) >= 25 and len(edhrec_staples) >= 25:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump({'top16': list(edhtop16_staples), 'rec': list(edhrec_staples)}, f)
+            logger.info(f"Identified {len(edhtop16_staples)} cEDH and {len(edhrec_staples)} EDH staples.")
+        else:
+            error_msg = f"Discovery incomplete: Found {len(edhtop16_staples)} cEDH and {len(edhrec_staples)} EDH."
+            logger.error(error_msg)
+            if len(edhtop16_staples) < 25:
+                raise RuntimeError(f"FATAL: Insufficient EDHTop16 results ({len(edhtop16_staples)}). Halted for investigation. {error_msg}")
 
-            current_price = recent_prices[-1]
-            six_month_high = max(recent_prices)
+        return edhtop16_staples, edhrec_staples
 
-            if six_month_high > current_price and current_price > 0:
-                drop_pct = ((six_month_high - current_price) / six_month_high) * 100
-                if drop_pct > 5:
-                    return {
-                        "Card Name": name,
-                        "Current Price": current_price,
-                        "6-Month High": six_month_high,
-                        "Drop %": round(drop_pct, 2)
-                    }
-        except: pass
-        return None
+    def _get_json_data(self, url, filename, ttl_hours=24):
+        gz_filename = filename + ".gz"
+        cache_path = os.path.join(self.cache_dir, gz_filename)
+        if os.path.exists(cache_path):
+            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_path))
+            if file_age < timedelta(hours=ttl_hours):
+                logger.info(f"Loading {gz_filename} from cache (age: {file_age})...")
+                with gzip.open(cache_path, 'rt', encoding='utf-8') as f:
+                    return json.load(f).get("data", {})
+        
+        gz_url = url + ".gz"
+        logger.info(f"Cache expired or missing. Downloading {gz_url}...")
+        r = self.session.get(gz_url, stream=True, timeout=600)
+        with open(cache_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
+        with gzip.open(cache_path, 'rt', encoding='utf-8') as f:
+            return json.load(f).get("data", {})
 
     def get_market_dips(self):
-        # 1. Aggregate Staples from both sites
-        edhtop16 = self._get_edhtop16_staples()
-        edhrec = self._get_edhrec_top_cards()
+        top16_set, rec_set = self._get_staples()
+        all_staples = top16_set.union(rec_set)
         
-        # Combine and filter out basic lands
-        staple_names_set = {
-            n.lower() for n in (edhtop16 + edhrec) 
-            if n and n.lower() not in self.excluded_cards
-        }
-        logger.info(f"Aggregated {len(staple_names_set)} unique staple names (basics excluded).")
+        if not all_staples: return
 
-        # 2. Fetch MTGJSON Data
-        ids_url = "https://mtgjson.com/api/v5/AllIdentifiers.json"
-        prices_url = "https://mtgjson.com/api/v5/AllPrices.json"
+        # Apply specific TTLs to MTGJSON files
+        ids_data = self._get_json_data("https://mtgjson.com/api/v5/AllIdentifiers.json", "AllIdentifiers.json", ttl_hours=self.TTL_IDENTIFIERS)
+        prices_data = self._get_json_data("https://mtgjson.com/api/v5/AllPrices.json", "AllPrices.json", ttl_hours=self.TTL_PRICES)
+        
+        # Define the window for the "High" price based on initialized days
+        date_limit = (datetime.now() - timedelta(days=self.high_window_days)).strftime("%Y-%m-%d")
+        high_label = f"{self.high_window_days}D High"
 
-        identifiers_data = self._get_json_data(ids_url, "AllIdentifiers.json")
-        prices_data = self._get_json_data(prices_url, "AllPrices.json")
+        logger.info(f"Filtering for cheapest tournament-legal copies ({high_label})...")
+        card_to_best = {}
+        for uuid, card in tqdm(ids_data.items(), desc="Filtering"):
+            name = card.get("name", "").lower()
+            if name in all_staples:
+                if card.get("setCode") in self.illegal_sets: continue
+                paper = prices_data.get(uuid, {}).get("paper", {})
+                
+                # Exclusively use TCGplayer retail normal pricing
+                hist = paper.get("tcgplayer", {}).get("retail", {}).get("normal", {})
+                
+                if hist:
+                    latest = max(hist.keys())
+                    curr = float(hist[latest])
+                    if curr > 0.40:
+                        if name not in card_to_best or curr < card_to_best[name]['curr']:
+                            valid_hist = [float(v) for d, v in hist.items() if d >= date_limit]
+                            if valid_hist:
+                                # Prioritize edhtop16 if in both
+                                source = "edhtop16" if name in top16_set else "edhrec"
+                                card_to_best[name] = {
+                                    'uuid': uuid, 
+                                    'curr': curr, 
+                                    'high': max(valid_hist), 
+                                    'set': card.get("setCode"), 
+                                    'name': card.get("name"), 
+                                    'source': source
+                                }
+        
+        del ids_data
+        results = []
+        for name, data in card_to_best.items():
+            curr, high = data['curr'], data['high']
+            drop_amt = high - curr
+            drop_pct = (drop_amt / high) * 100
+            
+            # Hide if drop is less than configurable dollar or percentage thresholds
+            if drop_pct >= self.min_drop_pct and drop_amt >= self.min_drop_dollars:
+                results.append({
+                    "Card Name": data['name'], 
+                    "Set": data['set'], 
+                    "Source": data['source'],
+                    "Price": curr, 
+                    high_label: high, 
+                    "Drop %": round(drop_pct, 2)
+                })
 
-        if not identifiers_data or not prices_data:
-            logger.error("Could not load MTGJSON data.")
+        df = pd.DataFrame(results)
+        if df.empty:
+            logger.info("No significant dips found.")
             return
 
-        # 3. Filter IDs by Staples
-        logger.info("Filtering metadata for aggregated staples...")
-        target_uuids = {}
-        for uuid, card in identifiers_data.items():
-            card_name = card.get("name", "").lower()
-            if card_name in staple_names_set:
-                target_uuids[uuid] = card.get("name")
+        # Merged report sorted by Drop % descending
+        report_df = df.sort_values("Drop %", ascending=False).copy()
+        report_df['Price'] = report_df['Price'].map('${:,.2f}'.format)
+        report_df[high_label] = report_df[high_label].map('${:,.2f}'.format)
         
-        # Fallback to Reserved List (excluding basics) if both sites fail
-        if not target_uuids:
-            logger.warning("No staples found via sites. Falling back to Reserved List...")
-            for uuid, card in identifiers_data.items():
-                card_name = card.get("name", "").lower()
-                if card.get("isReserved") and card.get("legalities", {}).get("commander") == "Legal" and card_name not in self.excluded_cards:
-                    target_uuids[uuid] = card.get("name")
-        
-        del identifiers_data
-
-        # 4. Parallel Processing
-        six_months_ago_str = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
-        logger.info(f"Analyzing {len(target_uuids)} cards across CPU cores...")
-        
-        results = []
-        with ThreadPoolExecutor(max_workers=os.cpu_count() * 2) as executor:
-            futures = [
-                executor.submit(self.process_card, uuid, name, prices_data, six_months_ago_str) 
-                for uuid, name in target_uuids.items()
-            ]
-            for f in as_completed(futures):
-                res = f.result()
-                if res: results.append(res)
-
-        # 5. Output
-        df = pd.DataFrame(results)
-        if not df.empty:
-            df = df.sort_values("Drop %", ascending=False).drop_duplicates(subset=["Card Name"])
-            df['Current Price'] = df['Current Price'].map('${:,.2f}'.format)
-            df['6-Month High'] = df['6-Month High'].map('${:,.2f}'.format)
-            
-            logger.info("\nTop 6-Month Market Dips (Aggregated Staples):")
-            print(df.head(50).to_string(index=False))
-        else:
-            logger.info("No significant dips found.")
+        logger.info(f"\n[REPORT] Merged MTG Staple Dips ({high_label} window, ${self.min_drop_dollars} min drop, {self.min_drop_pct}% min drop):")
+        print(report_df[["Card Name", "Set", "Source", "Price", high_label, "Drop %"]].to_string(index=False))
 
 if __name__ == "__main__":
     start = datetime.now()
-    MTGDipDetector().get_market_dips()
+    # Initialize with default 90 days high window, $0.75 min drop, and 35% min drop
+    MTGDipDetector(high_window_days=90, min_drop_dollars=0.75, min_drop_pct=35.0).get_market_dips()
     logger.info(f"Total Run Time: {datetime.now() - start}")
