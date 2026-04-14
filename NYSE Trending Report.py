@@ -11,11 +11,13 @@ logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 class NyseTrendingReport:
     """
-    Stabilized Dividend Report with Threaded yfinance Fetching.
-    Manual yield calculation for high financial accuracy.
+    Stabilized Dividend Report with Threaded yfinance Fetching and Caching.
+    TTL of 4 hours for market metrics to prevent API blocks.
     """
-    def __init__(self, cache_path='market_symbols.csv'):
+    def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
         self.cache_path = os.path.abspath(cache_path)
+        self.data_cache_path = os.path.abspath(data_cache_path)
+        self.cache_ttl = 4 * 3600  # 4 hours in seconds
         self.market_data = pd.DataFrame()
         self.final_report = pd.DataFrame()
         self.symbol_index_map = {}
@@ -52,7 +54,7 @@ class NyseTrendingReport:
         return df['symbol'].tolist()
 
     def fetch_single_ticker(self, symbol):
-        """Fetches detailed info and calculates yield manually for accuracy."""
+        """Fetches info and isolates recurring dividends."""
         try:
             t = yf.Ticker(symbol)
             info = t.info
@@ -60,32 +62,20 @@ class NyseTrendingReport:
             price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
             if price == 0: return None
 
-            # Calculate yield manually: (Annual Dividend / Current Price) * 100
-            # This is much more reliable than the pre-calculated fields
-            div_rate = info.get('dividendRate') or info.get('trailingAnnualDividendRate') or 0
+            forward_rate = info.get('dividendRate') or 0
+            trailing_rate = info.get('trailingAnnualDividendRate') or 0
             
-            # If rate is 0, check the dividendYield field as fallback but normalize it
-            if div_rate == 0:
-                y = info.get('dividendYield') or info.get('trailingAnnualDividendYield') or 0
-                # yfinance 'dividendYield' is usually a decimal (0.05 = 5%)
-                # but if it's already > 1 (like 5.0), we treat it as a percentage
-                div_yield_pct = y * 100 if y < 1 else y
-            else:
-                div_yield_pct = (div_rate / price) * 100
-
-            # Round to 2 decimal places
-            div_yield_pct = round(float(div_yield_pct), 2)
+            active_rate = forward_rate if forward_rate > 0 else trailing_rate
+            div_yield_pct = (active_rate / price) * 100
             
-            # Sanity check: Realistically, S&P dividends rarely exceed 20%
-            if div_yield_pct > 25:
-                # Likely a data error or special dividend we want to exclude for trend analysis
+            if div_yield_pct > 20 or div_yield_pct < 0.1:
                 return None
 
             return {
                 'Symbol': symbol,
                 'Name': info.get('longName', info.get('shortName', 'N/A')),
                 'Price': price,
-                'Div Yield (%)': div_yield_pct,
+                'Div Yield (%)': round(float(div_yield_pct), 2),
                 '52W High': info.get('fiftyTwoWeekHigh', 0),
                 'P/E Ratio': info.get('trailingPE', 'N/A'),
                 'Index': self.symbol_index_map.get(symbol, 'N/A'),
@@ -95,7 +85,17 @@ class NyseTrendingReport:
             return None
 
     def collect_market_data(self, symbols):
-        logger.info(f"Step 1: Fetching data for {len(symbols)} symbols via yfinance...")
+        # Check for valid cache
+        if os.path.exists(self.data_cache_path):
+            file_age = time.time() - os.path.getmtime(self.data_cache_path)
+            if file_age < self.cache_ttl:
+                logger.info(f"Loading market data from cache (Last updated {round(file_age/60)} minutes ago)...")
+                df_all = pd.read_csv(self.data_cache_path)
+                self.market_data = df_all[df_all['Div Yield (%)'] > 1.5].copy()
+                logger.info(f"Found {len(self.market_data)} candidates in cache.")
+                return
+
+        logger.info(f"Step 1: Fetching recurring dividend data for {len(symbols)} symbols via yfinance...")
         results = []
         
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -106,13 +106,16 @@ class NyseTrendingReport:
         
         df_all = pd.DataFrame(results)
         
-        if df_all.empty:
+        if not df_all.empty:
+            # Save to cache
+            df_all.to_csv(self.data_cache_path, index=False)
+            logger.info(f"Market data cached to {self.data_cache_path}")
+            
+            logger.info("Step 2: Filtering for recurring yields > 1.5%...")
+            self.market_data = df_all[df_all['Div Yield (%)'] > 1.5].copy()
+            logger.info(f"Found {len(self.market_data)} recurring dividend stocks.")
+        else:
             logger.error("No market data could be retrieved.")
-            return
-
-        logger.info("Step 2: Filtering for stocks with > 1.5% yield...")
-        self.market_data = df_all[df_all['Div Yield (%)'] > 1.5].copy()
-        logger.info(f"Filtered down to {len(self.market_data)} candidates.")
 
     def filter_and_rank(self, top_n=100):
         if self.market_data.empty: return
@@ -130,19 +133,26 @@ class NyseTrendingReport:
         html_content = f"""
         <html>
         <head>
+            <title>S&P Recurring Dividend Report</title>
             <style>
-                body {{ font-family: sans-serif; padding: 20px; color: #333; }}
-                h2 {{ color: #2c3e50; }}
-                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
-                th, td {{ padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }}
-                th {{ background: #f8f9fa; font-weight: bold; }}
-                tr:nth-child(even) {{ background-color: #fcfcfc; }}
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 30px; color: #333; background-color: #f4f7f6; }}
+                .container {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+                h2 {{ color: #2c3e50; margin-top: 0; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; font-size: 14px; }}
+                th, td {{ padding: 12px 15px; border-bottom: 1px solid #ddd; text-align: left; }}
+                th {{ background: #34495e; color: white; }}
+                tr:nth-child(even) {{ background-color: #f9f9f9; }}
+                tr:hover {{ background-color: #f1f1f1; transition: 0.3s; }}
+                .footer {{ margin-top: 20px; font-size: 12px; color: #7f8c8d; }}
             </style>
         </head>
         <body>
-            <h2>S&P Dividend Report — {date.today()}</h2>
-            <p>Calculated using (Annual Dividend Rate / Current Price). Filtered for > 1.5% yield.</p>
-            {self.final_report[cols].to_html(index=False)}
+            <div class="container">
+                <h2>S&P Recurring Dividend Report — {date.today()}</h2>
+                <p>Calculated using <strong>Forward Dividend Rates</strong> to exclude one-time special payouts. Filtered for recurring yields > 1.5%.</p>
+                {self.final_report[cols].to_html(index=False, border=0)}
+                <div class="footer">Data sourced via yfinance for S&P 500, 400, and 600 indices. Market metrics cached for 4 hours.</div>
+            </div>
         </body>
         </html>
         """
@@ -155,7 +165,7 @@ class NyseTrendingReport:
                 page = browser.new_page()
                 page.set_content(html_content)
                 pdf_path = f"dividend_report_{date.today()}.pdf"
-                page.pdf(path=pdf_path, format='A4', landscape=True)
+                page.pdf(path=pdf_path, format='A4', landscape=True, print_background=True)
                 browser.close()
             logger.info(f"PDF Report saved: {pdf_path}")
         except Exception as e:
