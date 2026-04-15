@@ -13,7 +13,8 @@ logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 class NyseTrendingReport:
     """
-    Reliable Dividend Report with Sharpe Ratio and Debugging Diagnostics.
+    Stabilized Dividend Report with Sharpe Ratio and Stale-if-Error Caching.
+    Filters the S&P 500, 400, and 600 for reliable yield opportunities.
     """
     def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
         self.cache_path = os.path.abspath(cache_path)
@@ -27,9 +28,9 @@ class NyseTrendingReport:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         })
-        self.debug_count = 0 # Counter for limited debug logging
 
     def _get_wikipedia_table(self, url):
+        """Robustly parse Wikipedia tables to find stock symbols."""
         try:
             resp = self.session.get(url, timeout=20)
             resp.raise_for_status()
@@ -61,6 +62,7 @@ class NyseTrendingReport:
             return []
 
     def get_all_symbols_with_indices(self):
+        """Loads or scrapes S&P 500/400/600 symbols from Wikipedia."""
         if os.path.exists(self.cache_path):
             file_age = time.time() - os.path.getmtime(self.cache_path)
             if file_age < self.symbol_ttl:
@@ -68,7 +70,6 @@ class NyseTrendingReport:
                     cache_df = pd.read_csv(self.cache_path)
                     if not cache_df.empty and 'symbol' in cache_df.columns:
                         self.symbol_index_map = dict(zip(cache_df['symbol'], cache_df['index']))
-                        logger.info(f"Loaded {len(cache_df)} symbols from cache.")
                         return cache_df['symbol'].tolist()
                 except Exception: pass
 
@@ -91,60 +92,32 @@ class NyseTrendingReport:
         return df['symbol'].tolist()
 
     def fetch_single_ticker(self, symbol):
-        """Fetches data with diagnostic logging and fallback logic."""
+        """Fetches and calculates metrics for a single stock."""
         try:
-            time.sleep(random.uniform(0.2, 0.6)) # Jittered sleep
+            time.sleep(random.uniform(0.1, 0.4)) # Polite jitter
+            t = yf.Ticker(symbol)
             
-            # Removed session=self.session to see if it resolves yfinance flakiness
-            t = yf.Ticker(symbol) 
-            
-            # Step 1: Get History (Cheaper than .info)
+            # 1. Price History for Sharpe Ratio
             hist = t.history(period="1y")
             if hist.empty or len(hist) < 50:
-                if self.debug_count < 5: 
-                    logger.info(f"[{symbol}] Skipping: Empty or insufficient history (len={len(hist)}).")
-                    self.debug_count += 1
                 return None
             
             price = hist['Close'].iloc[-1]
-            if price == 0:
-                if self.debug_count < 5: 
-                    logger.info(f"[{symbol}] Skipping: Current price is 0.")
-                    self.debug_count += 1
-                return None
-
-            # Step 2: Calculate Sharpe Ratio
             returns = hist['Close'].pct_change().dropna()
             ann_return = returns.mean() * 252
             ann_vol = returns.std() * np.sqrt(252)
-            rf_rate = 0.02 # Lowered RF rate to 2% to be less aggressive
+            rf_rate = 0.04 # 4% Risk-Free Rate
             sharpe = (ann_return - rf_rate) / ann_vol if ann_vol > 0 else -1.0
             
-            # Filter for reliable growth (Relaxed to > -0.5 for diagnostics)
-            if sharpe < 0: 
-                if self.debug_count < 5: 
-                    logger.info(f"[{symbol}] Skipping: Negative Sharpe Ratio ({sharpe:.2f}).")
-                    self.debug_count += 1
-                return None
+            # Skip unreliable or zero-yield stocks immediately
+            if sharpe <= 0: return None
 
-            # Step 3: Fetch Dividend Info (only if Sharpe is positive)
+            # 2. Fundamental Dividend Data
             info = t.info
-            if not info:
-                if self.debug_count < 5: 
-                    logger.info(f"[{symbol}] Skipping: Failed to retrieve .info data.")
-                    self.debug_count += 1
-                return None
-
-            forward_rate = info.get('dividendRate') or 0
-            trailing_rate = info.get('trailingAnnualDividendRate') or 0
-            active_rate = forward_rate if forward_rate > 0 else trailing_rate
-            
-            # Final Yield Check
+            active_rate = info.get('dividendRate') or info.get('trailingAnnualDividendRate') or 0
             div_yield_pct = (active_rate / price) * 100
-            if div_yield_pct > 25 or div_yield_pct < 0.1:
-                if self.debug_count < 5: 
-                    logger.info(f"[{symbol}] Skipping: Dividend yield ({div_yield_pct:.2f}%) out of range.")
-                    self.debug_count += 1
+            
+            if div_yield_pct > 25 or div_yield_pct < 1.0: # Filter yields < 1%
                 return None
 
             return {
@@ -158,14 +131,11 @@ class NyseTrendingReport:
                 'Index': self.symbol_index_map.get(symbol, 'N/A'),
                 'Sector': info.get('sector', 'N/A')
             }
-        except Exception as e:
-            if self.debug_count < 5: 
-                logger.info(f"[{symbol}] Skipping: Exception during fetch: {e}")
-                self.debug_count += 1
+        except Exception:
             return None
 
     def collect_market_data(self, symbols):
-        # 1. Check for Fresh Cache (4 Hours)
+        """Orchestrates data collection with 4-hour caching."""
         cache_exists = os.path.exists(self.data_cache_path)
         if cache_exists:
             file_age = time.time() - os.path.getmtime(self.data_cache_path)
@@ -173,45 +143,42 @@ class NyseTrendingReport:
                 try:
                     df_all = pd.read_csv(self.data_cache_path)
                     self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
-                    logger.info(f"Using fresh cache (updated {round(file_age/60)}m ago)")
+                    logger.info(f"Using cache ({round(file_age/60)}m old)")
                     return
                 except Exception: pass
 
-        # 2. Cache expired or missing, attempt Fetch
-        logger.info(f"Processing {len(symbols)} symbols... This may take a few minutes.")
+        logger.info(f"Analyzing {len(symbols)} symbols via yfinance...")
         results = []
-        self.debug_count = 0 # Reset debug counter for each run
-        with ThreadPoolExecutor(max_workers=8) as executor: # Reduced workers to 8
+        with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_symbol = {executor.submit(self.fetch_single_ticker, s): s for s in symbols}
             for future in tqdm(as_completed(future_to_symbol), total=len(symbols), desc="Downloading"):
                 res = future.result()
                 if res: results.append(res)
         
-        # 3. Handle Results or Fallback to Stale Cache
         if results:
             df_all = pd.DataFrame(results)
             df_all.to_csv(self.data_cache_path, index=False)
-            self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
-            logger.info(f"Fetch complete. Found {len(self.market_data)} reliable stocks.")
+            self.market_data = df_all.copy()
+            logger.info(f"Found {len(self.market_data)} reliable dividend stocks.")
         elif cache_exists:
-            # Stale-if-Error: Fetch failed, use old data if available (max 24h old)
-            file_age = time.time() - os.path.getmtime(self.data_cache_path)
-            if file_age < (24 * 3600):
-                logger.warning(f"New fetch failed. Falling back to stale cache ({round(file_age/60)}m old).")
-                df_all = pd.read_csv(self.data_cache_path)
-                self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
-            else:
-                logger.error("Fetch failed and cache is too old (>24h).")
+            logger.warning("Fetch failed. Falling back to stale cache.")
+            df_all = pd.read_csv(self.data_cache_path)
+            self.market_data = df_all.copy()
         else:
-            logger.error("No market data could be retrieved.")
+            logger.error("No market data available.")
 
     def filter_and_rank(self, top_n=100):
+        """Ranks by Sharpe Ratio first (Reliability), then Yield."""
         if self.market_data.empty: return
-        self.final_report = self.market_data.sort_values(by=['Sharpe Ratio', 'Div Yield (%)'], ascending=[False, False]).head(top_n)
+        self.final_report = self.market_data.sort_values(
+            by=['Sharpe Ratio', 'Div Yield (%)'], 
+            ascending=[False, False]
+        ).head(top_n)
 
     def generate_report(self):
+        """Generates HTML and PDF reports."""
         if self.final_report.empty:
-            logger.warning("No data for report.")
+            logger.warning("No matches for report.")
             return
         
         output_html = 'dividend_report.html'
@@ -238,9 +205,9 @@ class NyseTrendingReport:
         <body>
             <div class="container">
                 <h2>S&P Reliable Dividend Report — {date.today()}</h2>
-                <p>Calculated with <strong>Sharpe Ratio > 0</strong> and <strong>Forward Yield > 1.5%</strong>.</p>
+                <p>Filter Criteria: <strong>Sharpe Ratio > 0</strong> (Risk-Adjusted Return) and <strong>Forward Yield > 1%</strong>.</p>
                 {self.final_report[cols].to_html(index=False, border=0)}
-                <div class="footer">Data: yfinance. Sharpe: 1Y Return/Vol vs 2% RF. Generated: {current_time}.</div>
+                <div class="footer">Data sourced via yfinance for S&P 500/400/600. Generated at {current_time}.</div>
             </div>
         </body>
         </html>
@@ -256,7 +223,7 @@ class NyseTrendingReport:
                 pdf_path = f"dividend_report_{current_time}.pdf"
                 page.pdf(path=pdf_path, format='A4', landscape=True, print_background=True)
                 browser.close()
-            logger.info(f"PDF saved: {pdf_path}")
+            logger.info(f"PDF Report saved: {pdf_path}")
         except Exception as e:
             logger.error(f"PDF error: {e}")
 
