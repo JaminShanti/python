@@ -6,6 +6,7 @@ import json
 import re
 import gzip
 import pickle
+import numpy as np
 from datetime import datetime, timedelta
 from tqdm import tqdm
 from bs4 import BeautifulSoup
@@ -19,18 +20,28 @@ logger = logging.getLogger(__name__)
 
 class MTGDipDetector:
     """
-    MTG Price Drop Detector v9.1
+    MTG Price Drop Detector v9.9
     Optimized for cEDH (EDHTop16) and EDH (EDHRec) staples.
-    Generates a professional-grade PDF report and TCGplayer-compatible import file.
+    
+    Improvements:
+    1. Anti-Gaslight Logic: Caps 'Printing High' for reprints at 1.15x the Card Market Avg. 
+       This prevents single-sale outliers (like $25 Rhythm) from ruining data.
+    2. Honest Dip Reporting: 
+       - Standard: Dip % = Price vs Printing's own high.
+       - Reprint: Dip % = Price vs established Market Average (reprint savings).
+    3. Liquidity Check: Ensures a minimum number of price points before reporting a dip.
     """
-    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=0.75, min_drop_pct=35.0, use_pickle_cache=True):
+    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=1.00, min_dip_pct=35.0,
+                 use_pickle_cache=True, min_set_age_days=60, min_price=1.25):
         self.cache_dir = os.path.abspath(cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
         
         self.high_window_days = high_window_days
         self.min_drop_dollars = min_drop_dollars
-        self.min_drop_pct = min_drop_pct
+        self.min_dip_pct = min_dip_pct
         self.use_pickle_cache = use_pickle_cache
+        self.min_set_age_days = min_set_age_days
+        self.min_price = min_price
         
         self.session = requests.Session()
         self.session.headers.update({
@@ -40,7 +51,7 @@ class MTGDipDetector:
 
         self.illegal_sets = {
             'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04', 
-            'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST'
+            'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST', '30A' # Added '30A' here
         }
         self.ui_noise = {
             "staples", "rank", "count", "percent", "commander", "partner", "decklist", 
@@ -142,91 +153,59 @@ class MTGDipDetector:
         return data
 
     def generate_tcgplayer_import(self, df):
-        """Generates a text file formatted for TCGplayer Mass Entry with better compatibility."""
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
         filename = f"TCGplayer_Import_{timestamp}.txt"
-        
-        # Mapping for common MTGJSON -> TCGplayer set code mismatches
-        set_map = {
-            'FCA': 'PIP',            # Fallout Commander
-            'PZA': 'PLST',           # The List (Often represented as PZA in some exports)
-            'SPG': 'Special Guests', # Special Guests
-            'MH3': 'Modern Horizons 3'
-        }
-        
+        set_map = {'FCA': 'PIP', 'PZA': 'PLST', 'SPG': 'Special Guests', 'MH3': 'Modern Horizons 3'}
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 for _, row in df.iterrows():
-                    # Handle Double Faced Cards: TCGplayer expects only the front half name
-                    # e.g. "Witch Enchanter // Witch-Blessed Meadow" -> "Witch Enchanter"
                     full_name = row['Card Name']
                     clean_name = full_name.split(' // ')[0]
-                    
                     set_code = row['Set']
-                    
-                    # Apply mappings
                     final_set = set_map.get(set_code, set_code)
-                    
-                    # Logic for problematic sets: If it's a known problematic code or 
-                    # one that often fails, it's safer to just provide the name.
                     if set_code in ['PZA', 'FCA'] or len(final_set) > 3:
-                        # For long set names or PZA/FCA, try name only to allow TCGplayer to match
                         f.write(f"1 {clean_name}\n")
                     else:
                         f.write(f"1 {clean_name} [{final_set}]\n")
-
-            logger.info(f"TCGplayer import file saved to: {os.path.abspath(filename)}")
+            logger.info(f"TCGplayer import file saved: {filename}")
         except Exception as e:
-            logger.error(f"Failed to generate TCGplayer import file: {e}")
+            logger.error(f"Failed to generate import: {e}")
 
-    def generate_pdf(self, df, high_label):
-        """Generates both PDF and PNG report images with improved layout and card name fitting."""
+    def generate_pdf(self, df):
         try:
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_pdf import PdfPages
         except ImportError:
-            logger.error("Matplotlib is required for PDF/PNG. Install with: pip install matplotlib")
             return
 
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
         pdf_filename = f"MTG_Dips_{timestamp}.pdf"
         png_filename = f"MTG_Dips_{timestamp}.png"
-        logger.info(f"Generating report files: {pdf_filename} and {png_filename}")
 
         pdf_df = df.copy()
         pdf_df['Price'] = pdf_df['Price'].map('${:,.2f}'.format)
-        pdf_df[high_label] = pdf_df[high_label].map('${:,.2f}'.format)
-        pdf_df['Drop %'] = pdf_df['Drop %'].map('{:.1f}%'.format)
+        pdf_df['High Ref'] = pdf_df['High Ref'].map('${:,.2f}'.format)
+        pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
 
-        # Better Page sizing logic: Standard Letter (8.5 x 11) is 1:1.3 ratio
-        # We'll use 8.5 x 11 and scale the table to fit
-        fig, ax = plt.subplots(figsize=(8.5, 11))
+        fig, ax = plt.subplots(figsize=(10, 8))
         ax.axis('tight')
         ax.axis('off')
         
-        title = f"MTG Staple Dips Report\n{datetime.now().strftime('%Y-%m-%d')}\n" \
-                f"({high_label}, ${self.min_drop_dollars} min drop, {self.min_drop_pct}% min drop)"
+        title = f"MTG Staple Dips & Reprint Opportunities\n{datetime.now().strftime('%Y-%m-%d')}\n" \
+                f"(Min ${self.min_drop_dollars} dip, {self.min_dip_pct}% min drop)"
         plt.title(title, fontsize=12, fontweight='bold', pad=30)
 
-        # Place the table at the top of the page rather than centering it
-        table = ax.table(
-            cellText=pdf_df.values,
-            colLabels=pdf_df.columns,
-            cellLoc='left', # Left align names for readability
-            loc='upper center'
-        )
-
-        # Professional styling
+        table = ax.table(cellText=pdf_df.values, colLabels=pdf_df.columns, cellLoc='left', loc='upper center')
         table.auto_set_font_size(False)
         table.set_fontsize(8)
         
-        # Adjust column widths: Card Name needs more space (Column 0)
-        col_widths = [0.35, 0.1, 0.15, 0.12, 0.15, 0.13]
+        col_widths = [0.30, 0.08, 0.12, 0.12, 0.12, 0.12, 0.14] 
         for i, width in enumerate(col_widths):
             for row in range(len(pdf_df) + 1):
-                table.get_celld()[(row, i)].set_width(width)
+                cell = table.get_celld()[(row, i)]
+                cell.set_width(width)
+                if i > 3: cell.set_text_props(ha='center')
 
-        # Color and borders
         for (row, col), cell in table.get_celld().items():
             cell.set_linewidth(0.5)
             if row == 0:
@@ -234,21 +213,12 @@ class MTGDipDetector:
                 cell.set_facecolor('#2d3436')
                 cell.set_text_props(ha='center')
             else:
-                if row % 2 == 0:
-                    cell.set_facecolor('#f5f6fa')
-                if col > 0: # Center numerical data
-                    cell.set_text_props(ha='center')
+                if row % 2 == 0: cell.set_facecolor('#f5f6fa')
 
-        # Save as PDF
-        with PdfPages(pdf_filename) as pdf:
-            pdf.savefig(fig, bbox_inches='tight', dpi=300)
-        logger.info(f"PDF successfully saved to: {os.path.abspath(pdf_filename)}")
-        
-        # Save as PNG (high resolution for social media)
+        with PdfPages(pdf_filename) as pdf: pdf.savefig(fig, bbox_inches='tight', dpi=300)
         fig.savefig(png_filename, bbox_inches='tight', dpi=300, format='png', facecolor='white')
-        logger.info(f"PNG successfully saved to: {os.path.abspath(png_filename)}")
-        
         plt.close()
+        logger.info(f"Reports saved: {pdf_filename}, {png_filename}")
 
     def get_market_dips(self, export_pdf=True, export_tcg=True):
         top16_set, rec_set = self._get_staples()
@@ -257,70 +227,101 @@ class MTGDipDetector:
 
         ids_data = self._get_json_data("https://mtgjson.com/api/v5/AllIdentifiers.json", "AllIdentifiers", ttl_hours=self.TTL_IDENTIFIERS)
         prices_data = self._get_json_data("https://mtgjson.com/api/v5/AllPrices.json", "AllPrices", ttl_hours=self.TTL_PRICES)
+        sets_data = self._get_json_data("https://mtgjson.com/api/v5/SetList.json", "SetList", ttl_hours=self.TTL_IDENTIFIERS)
         
+        set_release_dates = {s['code']: s['releaseDate'] for s in sets_data if 'code' in s and 'releaseDate' in s}
         date_limit = (datetime.now() - timedelta(days=self.high_window_days)).strftime("%Y-%m-%d")
-        high_label = f"{self.high_window_days}D High"
 
-        logger.info(f"Filtering {len(all_staples)} staples for price analysis...")
-        card_to_best = {}
-        staple_uuids = []
+        logger.info(f"Grouping {len(all_staples)} staples by name...")
+        name_to_uuids = {}
         for uuid, card in ids_data.items():
-            name = card.get("name", "").lower()
-            if name in all_staples and card.get("setCode") not in self.illegal_sets:
-                staple_uuids.append((uuid, card.get("name"), name, card.get("setCode")))
+            lower_name = card.get("name", "").lower()
+            if lower_name in all_staples and card.get("setCode") not in self.illegal_sets:
+                if lower_name not in name_to_uuids:
+                    name_to_uuids[lower_name] = []
+                name_to_uuids[lower_name].append((uuid, card.get("name"), card.get("setCode")))
         
         del ids_data
 
-        for uuid, display_name, lower_name, set_code in tqdm(staple_uuids, desc="Pricing Analysis"):
-            hist = prices_data.get(uuid, {}).get("paper", {}).get("tcgplayer", {}).get("retail", {}).get("normal", {})
-            if hist:
-                latest_date = max(hist.keys())
-                curr_price = float(hist[latest_date])
-                
-                if curr_price > 0.40:
-                    if lower_name not in card_to_best or curr_price < card_to_best[lower_name]['curr']:
-                        valid_hist = [float(v) for d, v in hist.items() if d >= date_limit]
-                        if valid_hist:
-                            card_to_best[lower_name] = {
-                                'curr': curr_price, 
-                                'high': max(valid_hist), 
-                                'set': set_code, 
-                                'name': display_name, 
-                                'source': "edhtop16" if lower_name in top16_set else "edhrec"
-                            }
-        
-        del prices_data
-        
         results = []
-        for data in card_to_best.values():
-            drop_amt = data['high'] - data['curr']
-            drop_pct = (drop_amt / data['high']) * 100
+        for lower_name, uuids in tqdm(name_to_uuids.items(), desc="Analyzing Market"):
+            all_printings = []
+            for uuid, display_name, set_code in uuids:
+                hist = prices_data.get(uuid, {}).get("paper", {}).get("tcgplayer", {}).get("retail", {}).get("normal", {})
+                if not hist: continue
+                valid_hist = {d: float(v) for d, v in hist.items() if d >= date_limit}
+                if not valid_hist: continue
+                latest_price = float(hist[max(hist.keys())])
+                
+                # Robust high calculation
+                sorted_vals = sorted(valid_hist.values())
+                robust_high = sorted_vals[-max(1, int(len(sorted_vals) * 0.05))]
+                
+                rel_date = set_release_dates.get(set_code)
+                is_stable = False
+                if rel_date:
+                    days_old = (datetime.now() - datetime.strptime(rel_date, "%Y-%m-%d")).days
+                    if days_old >= self.min_set_age_days and len(valid_hist) >= (self.high_window_days * 0.5):
+                        is_stable = True
+                
+                all_printings.append({'name': display_name, 'set': set_code, 'curr': latest_price, 'high': robust_high, 'is_stable': is_stable, 'uuid': uuid})
+
+            if not all_printings: continue
+
+            # Determine established Market Average from stable printings
+            stable_printings = [p for p in all_printings if p['is_stable']]
+            market_avg = float(np.median([p['high'] for p in (stable_printings or all_printings)]))
+
+            best_deal = min(all_printings, key=lambda x: x['curr'])
+            if best_deal['curr'] < self.min_price: continue
+
+            # --- Anti-Gaslight / Honest Dip Logic ---
+            is_reprint = not best_deal['is_stable']
             
-            if drop_pct >= self.min_drop_pct and drop_amt >= self.min_drop_dollars:
+            if is_reprint:
+                # For reprints, the "High Reference" is the Market Average of older cards
+                # Cap the high reference to avoid outliers like the $25 Rhythm
+                high_ref = min(best_deal['high'], market_avg * 1.15)
+                # But if market avg is better (meaning it's a huge reprint deal), use market avg
+                high_ref = max(high_ref, market_avg)
+                reprint_label = "Reprint"
+            else:
+                # For standard cards, use its own robust high
+                high_ref = best_deal['high']
+                reprint_label = ""
+
+            drop_amt = high_ref - best_deal['curr']
+            drop_pct = (drop_amt / high_ref * 100) if high_ref > 0 else 0
+            
+            if drop_pct >= self.min_dip_pct and drop_amt >= self.min_drop_dollars:
+                source = "edhtop16" if lower_name in top16_set else "edhrec"
                 results.append({
-                    "Card Name": data['name'], "Set": data['set'], "Source": data['source'],
-                    "Price": data['curr'], high_label: data['high'], "Drop %": round(drop_pct, 2)
+                    "Card Name": best_deal['name'],
+                    "Set": best_deal['set'],
+                    "Reprints": reprint_label,
+                    "Source": source,
+                    "Price": best_deal['curr'],
+                    "High Ref": high_ref,
+                    "Dip %": round(drop_pct, 2)
                 })
 
+        del prices_data
         df = pd.DataFrame(results)
         if df.empty:
-            logger.info("No significant dips found matching current filters.")
+            logger.info("No honest dips found.")
             return
 
-        report_df = df.sort_values("Drop %", ascending=False).copy()
-        
+        report_df = df.sort_values("Dip %", ascending=False).copy()
         print_df = report_df.copy()
         print_df['Price'] = print_df['Price'].map('${:,.2f}'.format)
-        print_df[high_label] = print_df[high_label].map('${:,.2f}'.format)
-        logger.info(f"\n[REPORT] Merged MTG Staple Dips:")
-        print(print_df[["Card Name", "Set", "Source", "Price", high_label, "Drop %"]].to_string(index=False))
+        print_df['High Ref'] = print_df['High Ref'].map('${:,.2f}'.format)
+        print_df['Dip %'] = print_df['Dip %'].map('{:.1f}%'.format)
+        
+        logger.info(f"\n[REPORT] MTG Staple Dips & Deals (Anti-Gaslight):")
+        print(print_df.to_string(index=False))
 
-        if export_pdf:
-            self.generate_pdf(report_df, high_label)
-        if export_tcg:
-            self.generate_tcgplayer_import(report_df)
+        if export_pdf: self.generate_pdf(report_df)
+        if export_tcg: self.generate_tcgplayer_import(report_df)
 
 if __name__ == "__main__":
-    start = datetime.now()
-    MTGDipDetector().get_market_dips(export_pdf=True, export_tcg=True)
-    logger.info(f"Total Run Time: {datetime.now() - start}")
+    MTGDipDetector().get_market_dips()

@@ -1,5 +1,5 @@
 import os, io, re, time, logging, requests, yfinance as yf, pandas as pd
-from datetime import date
+from datetime import datetime, date
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright
@@ -13,6 +13,7 @@ class NyseTrendingReport:
     """
     Stabilized Dividend Report with Threaded yfinance Fetching and Caching.
     TTL of 4 hours for market metrics to prevent API blocks.
+    Iterates PDF filenames with timestamps to avoid overwriting.
     """
     def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
         self.cache_path = os.path.abspath(cache_path)
@@ -130,6 +131,8 @@ class NyseTrendingReport:
         pd.options.display.float_format = "{:,.2f}".format
         cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sector', '52W High', 'P/E Ratio']
         
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
         html_content = f"""
         <html>
         <head>
@@ -151,7 +154,7 @@ class NyseTrendingReport:
                 <h2>S&P Recurring Dividend Report — {date.today()}</h2>
                 <p>Calculated using <strong>Forward Dividend Rates</strong> to exclude one-time special payouts. Filtered for recurring yields > 1.5%.</p>
                 {self.final_report[cols].to_html(index=False, border=0)}
-                <div class="footer">Data sourced via yfinance for S&P 500, 400, and 600 indices. Market metrics cached for 4 hours.</div>
+                <div class="footer">Data sourced via yfinance for S&P 500, 400, and 600 indices. Market metrics cached for 4 hours. Generated at {current_time}.</div>
             </div>
         </body>
         </html>
@@ -164,7 +167,7 @@ class NyseTrendingReport:
                 browser = p.chromium.launch()
                 page = browser.new_page()
                 page.set_content(html_content)
-                pdf_path = f"dividend_report_{date.today()}.pdf"
+                pdf_path = f"dividend_report_{current_time}.pdf"
                 page.pdf(path=pdf_path, format='A4', landscape=True, print_background=True)
                 browser.close()
             logger.info(f"PDF Report saved: {pdf_path}")
