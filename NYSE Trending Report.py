@@ -1,8 +1,10 @@
-import os, io, re, time, logging, requests, yfinance as yf, pandas as pd
-from datetime import datetime, date
+import os, io, re, time, logging, requests, yfinance as yf, pandas as pd, numpy as np
+from datetime import datetime, date, timedelta
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -11,65 +13,138 @@ logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 class NyseTrendingReport:
     """
-    Stabilized Dividend Report with Threaded yfinance Fetching and Caching.
-    TTL of 4 hours for market metrics to prevent API blocks.
-    Iterates PDF filenames with timestamps to avoid overwriting.
+    Reliable Dividend Report with Sharpe Ratio and Debugging Diagnostics.
     """
     def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
         self.cache_path = os.path.abspath(cache_path)
         self.data_cache_path = os.path.abspath(data_cache_path)
-        self.cache_ttl = 4 * 3600  # 4 hours in seconds
+        self.cache_ttl = 4 * 3600
+        self.symbol_ttl = 7 * 24 * 3600
         self.market_data = pd.DataFrame()
         self.final_report = pd.DataFrame()
         self.symbol_index_map = {}
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'})
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        })
+        self.debug_count = 0 # Counter for limited debug logging
 
-    def _get_wikipedia_table(self, url, match_str):
+    def _get_wikipedia_table(self, url):
         try:
             resp = self.session.get(url, timeout=20)
             resp.raise_for_status()
-            tables = pd.read_html(io.StringIO(resp.text), match=match_str, flavor='bs4')
-            df = max(tables, key=len)
-            ticker_col = next((col for col in df.columns if any(x in col for x in ['Symbol', 'Ticker', 'Ticker symbol'])), None)
-            if ticker_col is None: return []
-            return [re.sub(r'\.', '-', str(s).strip().split()[0].upper()) for s in df[ticker_col].tolist() if len(str(s)) < 7]
-        except: return []
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            all_symbols = []
+            for table in soup.find_all('table', class_='wikitable'):
+                header_row = table.find('tr')
+                if not header_row: continue
+                headers = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
+                ticker_idx = -1
+                for i, h in enumerate(headers):
+                    if any(x == h or x in h for x in ['Symbol', 'Ticker', 'Ticker symbol', 'Ticker Symbol']):
+                        ticker_idx = i
+                        break
+                if ticker_idx != -1:
+                    for row in table.find_all('tr')[1:]:
+                        cols = row.find_all('td')
+                        if len(cols) > ticker_idx:
+                            text = cols[ticker_idx].get_text(strip=True)
+                            parts = text.split()
+                            if parts:
+                                symbol = parts[0].upper()
+                                symbol = re.sub(r'[\.\/]', '-', symbol)
+                                if 0 < len(symbol) < 7:
+                                    all_symbols.append(symbol)
+            return sorted(list(set(all_symbols)))
+        except Exception as e:
+            logger.error(f"Error scraping {url}: {e}")
+            return []
 
     def get_all_symbols_with_indices(self):
         if os.path.exists(self.cache_path):
-            cache_df = pd.read_csv(self.cache_path)
-            self.symbol_index_map = dict(zip(cache_df['symbol'], cache_df['index']))
-            return cache_df['symbol'].tolist()
+            file_age = time.time() - os.path.getmtime(self.cache_path)
+            if file_age < self.symbol_ttl:
+                try:
+                    cache_df = pd.read_csv(self.cache_path)
+                    if not cache_df.empty and 'symbol' in cache_df.columns:
+                        self.symbol_index_map = dict(zip(cache_df['symbol'], cache_df['index']))
+                        logger.info(f"Loaded {len(cache_df)} symbols from cache.")
+                        return cache_df['symbol'].tolist()
+                except Exception: pass
 
-        indices = {'S&P 500': ('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', 'Symbol'),
-                   'S&P 400': ('https://en.wikipedia.org/wiki/List_of_S%26P_400_companies', 'Ticker symbol'),
-                   'S&P 600': ('https://en.wikipedia.org/wiki/List_of_S%26P_600_companies', 'Ticker symbol')}
+        logger.info("Scraping fresh symbols from Wikipedia...")
+        indices = {
+            'S&P 500': 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+            'S&P 400': 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies',
+            'S&P 600': 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'
+        }
         all_data = []
-        for name, (url, match) in indices.items():
-            symbols = self._get_wikipedia_table(url, match)
+        for name, url in indices.items():
+            symbols = self._get_wikipedia_table(url)
+            logger.info(f"Found {len(symbols)} symbols for {name}")
             for s in symbols: all_data.append({'symbol': s, 'index': name})
+        
+        if not all_data: return []
         df = pd.DataFrame(all_data).drop_duplicates('symbol')
         df.to_csv(self.cache_path, index=False)
         self.symbol_index_map = dict(zip(df['symbol'], df['index']))
         return df['symbol'].tolist()
 
     def fetch_single_ticker(self, symbol):
-        """Fetches info and isolates recurring dividends."""
+        """Fetches data with diagnostic logging and fallback logic."""
         try:
-            t = yf.Ticker(symbol)
-            info = t.info
+            time.sleep(random.uniform(0.2, 0.6)) # Jittered sleep
             
-            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
-            if price == 0: return None
+            # Removed session=self.session to see if it resolves yfinance flakiness
+            t = yf.Ticker(symbol) 
+            
+            # Step 1: Get History (Cheaper than .info)
+            hist = t.history(period="1y")
+            if hist.empty or len(hist) < 50:
+                if self.debug_count < 5: 
+                    logger.info(f"[{symbol}] Skipping: Empty or insufficient history (len={len(hist)}).")
+                    self.debug_count += 1
+                return None
+            
+            price = hist['Close'].iloc[-1]
+            if price == 0:
+                if self.debug_count < 5: 
+                    logger.info(f"[{symbol}] Skipping: Current price is 0.")
+                    self.debug_count += 1
+                return None
+
+            # Step 2: Calculate Sharpe Ratio
+            returns = hist['Close'].pct_change().dropna()
+            ann_return = returns.mean() * 252
+            ann_vol = returns.std() * np.sqrt(252)
+            rf_rate = 0.02 # Lowered RF rate to 2% to be less aggressive
+            sharpe = (ann_return - rf_rate) / ann_vol if ann_vol > 0 else -1.0
+            
+            # Filter for reliable growth (Relaxed to > -0.5 for diagnostics)
+            if sharpe < 0: 
+                if self.debug_count < 5: 
+                    logger.info(f"[{symbol}] Skipping: Negative Sharpe Ratio ({sharpe:.2f}).")
+                    self.debug_count += 1
+                return None
+
+            # Step 3: Fetch Dividend Info (only if Sharpe is positive)
+            info = t.info
+            if not info:
+                if self.debug_count < 5: 
+                    logger.info(f"[{symbol}] Skipping: Failed to retrieve .info data.")
+                    self.debug_count += 1
+                return None
 
             forward_rate = info.get('dividendRate') or 0
             trailing_rate = info.get('trailingAnnualDividendRate') or 0
-            
             active_rate = forward_rate if forward_rate > 0 else trailing_rate
-            div_yield_pct = (active_rate / price) * 100
             
-            if div_yield_pct > 20 or div_yield_pct < 0.1:
+            # Final Yield Check
+            div_yield_pct = (active_rate / price) * 100
+            if div_yield_pct > 25 or div_yield_pct < 0.1:
+                if self.debug_count < 5: 
+                    logger.info(f"[{symbol}] Skipping: Dividend yield ({div_yield_pct:.2f}%) out of range.")
+                    self.debug_count += 1
                 return None
 
             return {
@@ -77,66 +152,77 @@ class NyseTrendingReport:
                 'Name': info.get('longName', info.get('shortName', 'N/A')),
                 'Price': price,
                 'Div Yield (%)': round(float(div_yield_pct), 2),
+                'Sharpe Ratio': round(float(sharpe), 2),
                 '52W High': info.get('fiftyTwoWeekHigh', 0),
                 'P/E Ratio': info.get('trailingPE', 'N/A'),
                 'Index': self.symbol_index_map.get(symbol, 'N/A'),
                 'Sector': info.get('sector', 'N/A')
             }
-        except:
+        except Exception as e:
+            if self.debug_count < 5: 
+                logger.info(f"[{symbol}] Skipping: Exception during fetch: {e}")
+                self.debug_count += 1
             return None
 
     def collect_market_data(self, symbols):
-        # Check for valid cache
-        if os.path.exists(self.data_cache_path):
+        # 1. Check for Fresh Cache (4 Hours)
+        cache_exists = os.path.exists(self.data_cache_path)
+        if cache_exists:
             file_age = time.time() - os.path.getmtime(self.data_cache_path)
             if file_age < self.cache_ttl:
-                logger.info(f"Loading market data from cache (Last updated {round(file_age/60)} minutes ago)...")
-                df_all = pd.read_csv(self.data_cache_path)
-                self.market_data = df_all[df_all['Div Yield (%)'] > 1.5].copy()
-                logger.info(f"Found {len(self.market_data)} candidates in cache.")
-                return
+                try:
+                    df_all = pd.read_csv(self.data_cache_path)
+                    self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
+                    logger.info(f"Using fresh cache (updated {round(file_age/60)}m ago)")
+                    return
+                except Exception: pass
 
-        logger.info(f"Step 1: Fetching recurring dividend data for {len(symbols)} symbols via yfinance...")
+        # 2. Cache expired or missing, attempt Fetch
+        logger.info(f"Processing {len(symbols)} symbols... This may take a few minutes.")
         results = []
-        
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        self.debug_count = 0 # Reset debug counter for each run
+        with ThreadPoolExecutor(max_workers=8) as executor: # Reduced workers to 8
             future_to_symbol = {executor.submit(self.fetch_single_ticker, s): s for s in symbols}
             for future in tqdm(as_completed(future_to_symbol), total=len(symbols), desc="Downloading"):
                 res = future.result()
                 if res: results.append(res)
         
-        df_all = pd.DataFrame(results)
-        
-        if not df_all.empty:
-            # Save to cache
+        # 3. Handle Results or Fallback to Stale Cache
+        if results:
+            df_all = pd.DataFrame(results)
             df_all.to_csv(self.data_cache_path, index=False)
-            logger.info(f"Market data cached to {self.data_cache_path}")
-            
-            logger.info("Step 2: Filtering for recurring yields > 1.5%...")
-            self.market_data = df_all[df_all['Div Yield (%)'] > 1.5].copy()
-            logger.info(f"Found {len(self.market_data)} recurring dividend stocks.")
+            self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
+            logger.info(f"Fetch complete. Found {len(self.market_data)} reliable stocks.")
+        elif cache_exists:
+            # Stale-if-Error: Fetch failed, use old data if available (max 24h old)
+            file_age = time.time() - os.path.getmtime(self.data_cache_path)
+            if file_age < (24 * 3600):
+                logger.warning(f"New fetch failed. Falling back to stale cache ({round(file_age/60)}m old).")
+                df_all = pd.read_csv(self.data_cache_path)
+                self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
+            else:
+                logger.error("Fetch failed and cache is too old (>24h).")
         else:
             logger.error("No market data could be retrieved.")
 
     def filter_and_rank(self, top_n=100):
         if self.market_data.empty: return
-        self.final_report = self.market_data.sort_values(by=['Div Yield (%)', 'Price'], ascending=[False, False]).head(top_n)
+        self.final_report = self.market_data.sort_values(by=['Sharpe Ratio', 'Div Yield (%)'], ascending=[False, False]).head(top_n)
 
     def generate_report(self):
         if self.final_report.empty:
-            logger.warning("No matches found.")
+            logger.warning("No data for report.")
             return
         
         output_html = 'dividend_report.html'
         pd.options.display.float_format = "{:,.2f}".format
-        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sector', '52W High', 'P/E Ratio']
-        
+        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sharpe Ratio', 'Sector', '52W High', 'P/E Ratio']
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         
         html_content = f"""
         <html>
         <head>
-            <title>S&P Recurring Dividend Report</title>
+            <title>S&P Reliable Dividend Report</title>
             <style>
                 body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 30px; color: #333; background-color: #f4f7f6; }}
                 .container {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
@@ -151,10 +237,10 @@ class NyseTrendingReport:
         </head>
         <body>
             <div class="container">
-                <h2>S&P Recurring Dividend Report — {date.today()}</h2>
-                <p>Calculated using <strong>Forward Dividend Rates</strong> to exclude one-time special payouts. Filtered for recurring yields > 1.5%.</p>
+                <h2>S&P Reliable Dividend Report — {date.today()}</h2>
+                <p>Calculated with <strong>Sharpe Ratio > 0</strong> and <strong>Forward Yield > 1.5%</strong>.</p>
                 {self.final_report[cols].to_html(index=False, border=0)}
-                <div class="footer">Data sourced via yfinance for S&P 500, 400, and 600 indices. Market metrics cached for 4 hours. Generated at {current_time}.</div>
+                <div class="footer">Data: yfinance. Sharpe: 1Y Return/Vol vs 2% RF. Generated: {current_time}.</div>
             </div>
         </body>
         </html>
@@ -170,7 +256,7 @@ class NyseTrendingReport:
                 pdf_path = f"dividend_report_{current_time}.pdf"
                 page.pdf(path=pdf_path, format='A4', landscape=True, print_background=True)
                 browser.close()
-            logger.info(f"PDF Report saved: {pdf_path}")
+            logger.info(f"PDF saved: {pdf_path}")
         except Exception as e:
             logger.error(f"PDF error: {e}")
 
