@@ -1,36 +1,21 @@
-import requests
-import pandas as pd
-import os
-import logging
-import json
-import re
-import gzip
-import pickle
-import numpy as np
+import gzip, json, logging, os, pickle, re
 from datetime import datetime, timedelta
-from tqdm import tqdm
-from bs4 import BeautifulSoup
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+import numpy as np, pandas as pd, requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class MTGDipDetector:
-    """
-    MTG Price Drop Detector v9.9
-    Optimized for cEDH (EDHTop16) and EDH (EDHRec) staples.
-    
-    Improvements:
-    1. Anti-Gaslight Logic: Caps 'Printing High' for reprints at 1.15x the Card Market Avg. 
-       This prevents single-sale outliers (like $25 Rhythm) from ruining data.
-    2. Honest Dip Reporting: 
-       - Standard: Dip % = Price vs Printing's own high.
-       - Reprint: Dip % = Price vs established Market Average (reprint savings).
-    3. Liquidity Check: Ensures a minimum number of price points before reporting a dip.
-    """
     def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=1.00, min_dip_pct=25.0,
                  use_pickle_cache=True, min_set_age_days=60, min_price=1.25):
         self.cache_dir = os.path.abspath(cache_dir)
@@ -49,18 +34,14 @@ class MTGDipDetector:
             'Accept-Encoding': 'gzip'
         })
 
-        self.illegal_sets = {
-            'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04', 
-            'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST', '30A' # Added '30A' here
-        }
-        self.ui_noise = {
-            "staples", "rank", "count", "percent", "commander", "partner", "decklist", 
-            "filter", "share", "name", "price", "color", "type", "next", "previous", 
-            "search", "menu", "mountain", "forest", "island", "swamp", "plains"
-        }
-        
-        self.TTL_STAPLES = 24       
-        self.TTL_IDENTIFIERS = 168  
+        self.illegal_sets = {'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04',
+                           'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST', '30A'}
+        self.ui_noise = {"staples", "rank", "count", "percent", "commander", "partner", "decklist",
+                        "filter", "share", "name", "price", "color", "type", "next", "previous",
+                        "search", "menu", "mountain", "forest", "island", "swamp", "plains"}
+
+        self.TTL_STAPLES = 24
+        self.TTL_IDENTIFIERS = 168
         self.TTL_PRICES = 24        
 
     @staticmethod
@@ -121,7 +102,7 @@ class MTGDipDetector:
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump({'top16': list(edhtop16_staples), 'rec': list(edhrec_staples)}, f)
         else:
-            raise RuntimeError(f"FATAL: Insufficient staple results found.")
+            raise RuntimeError("FATAL: Insufficient staple results found.")
 
         return edhtop16_staples, edhrec_staples
 
@@ -172,10 +153,8 @@ class MTGDipDetector:
             logger.error(f"Failed to generate import: {e}")
 
     def generate_pdf(self, df):
-        try:
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_pdf import PdfPages
-        except ImportError:
+        if not HAS_MATPLOTLIB:
+            logger.warning("Matplotlib is not available, skipping PDF report generation.")
             return
 
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
@@ -253,7 +232,6 @@ class MTGDipDetector:
                 if not valid_hist: continue
                 latest_price = float(hist[max(hist.keys())])
                 
-                # Robust high calculation
                 sorted_vals = sorted(valid_hist.values())
                 robust_high = sorted_vals[-max(1, int(len(sorted_vals) * 0.05))]
                 
@@ -268,25 +246,19 @@ class MTGDipDetector:
 
             if not all_printings: continue
 
-            # Determine established Market Average from stable printings
             stable_printings = [p for p in all_printings if p['is_stable']]
             market_avg = float(np.median([p['high'] for p in (stable_printings or all_printings)]))
 
             best_deal = min(all_printings, key=lambda x: x['curr'])
             if best_deal['curr'] < self.min_price: continue
 
-            # --- Anti-Gaslight / Honest Dip Logic ---
             is_reprint = not best_deal['is_stable']
             
             if is_reprint:
-                # For reprints, the "High Reference" is the Market Average of older cards
-                # Cap the high reference to avoid outliers like the $25 Rhythm
                 high_ref = min(best_deal['high'], market_avg * 1.15)
-                # But if market avg is better (meaning it's a huge reprint deal), use market avg
                 high_ref = max(high_ref, market_avg)
                 reprint_label = "Reprint"
             else:
-                # For standard cards, use its own robust high
                 high_ref = best_deal['high']
                 reprint_label = ""
 
@@ -317,7 +289,7 @@ class MTGDipDetector:
         print_df['High Ref'] = print_df['High Ref'].map('${:,.2f}'.format)
         print_df['Dip %'] = print_df['Dip %'].map('{:.1f}%'.format)
         
-        logger.info(f"\n[REPORT] MTG Staple Dips & Deals (Anti-Gaslight):")
+        logger.info("\n[REPORT] MTG Staple Dips & Deals (Anti-Gaslight):")
         print(print_df.to_string(index=False))
 
         if export_pdf: self.generate_pdf(report_df)
