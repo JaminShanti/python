@@ -31,7 +31,7 @@ class MTGDipDetector:
        - Reprint: Dip % = Price vs established Market Average (reprint savings).
     3. Liquidity Check: Ensures a minimum number of price points before reporting a dip.
     """
-    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=1.00, min_dip_pct=35.0,
+    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=1.00, min_dip_pct=25.0,
                  use_pickle_cache=True, min_set_age_days=60, min_price=1.25):
         self.cache_dir = os.path.abspath(cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)

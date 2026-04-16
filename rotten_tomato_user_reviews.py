@@ -1,155 +1,187 @@
-import requests
-import json
-import pandas as pd
-import time
-import re
-import os
 import logging
-from wordcloud import WordCloud, STOPWORDS
-import matplotlib.pyplot as plt
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import List
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+from playwright.sync_api import sync_playwright, Page
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class RottenTomatoesReviews:
-    """
-    A class to scrape and analyze user reviews from Rotten Tomatoes.
-    """
-    
-    def __init__(self, show_name, is_movie=True):
-        self.show_name = show_name
-        self.is_movie = is_movie
-        self.base_url = "https://www.rottentomatoes.com"
-        self.review_name = self.show_name.replace('/', '_')
-        self.reviews_df = pd.DataFrame()
-        
-        # Create output directories
-        os.makedirs('reviews_csv', exist_ok=True)
-        os.makedirs('rt_review_img', exist_ok=True)
 
-    def get_initial_metadata(self):
-        url = f"{self.base_url}/{self.show_name}/reviews?type=user"
-        logger.info(f"Fetching initial metadata from: {url}")
-        
+class RottenTomatoesReviewScraper:
+    BASE_URL = "https://www.rottentomatoes.com/m"
+    REVIEWS_ENDPOINT = "reviews/all-audience"
+    MIN_REVIEW_LENGTH = 15
+    MAX_REVIEW_LENGTH = 5000
+    LOAD_MORE_SELECTOR = 'rt-button[data-pagemediareviewsmanager="loadMoreBtn:click"]'
+    REVIEW_CARD_SELECTOR = 'review-card'
+    REVIEW_TEXT_SELECTOR = 'drawer-more span[slot="content"]'
+
+    def __init__(self, headless: bool = True, debug: bool = False):
+        self.headless = headless
+        if debug:
+            logger.setLevel(logging.DEBUG)
+        logger.info(f"Initialized scraper (headless={headless}, debug={debug})")
+
+    def fetch_reviews(self, movie_slug: str, max_reviews: int = 200) -> List[str]:
+        logger.info(f"Starting review fetch for: {movie_slug} (target: {max_reviews} reviews)")
+        reviews = set()
+        url = f"{self.BASE_URL}/{movie_slug}/{self.REVIEWS_ENDPOINT}"
+
         try:
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            page_content = response.text
-            
-            context_key = 'root.RottenTomatoes.context.movieReview' if self.is_movie else 'root.RottenTomatoes.context.seasonReviews'
-            match = re.search(r'%s = (.*?);' % context_key, page_content)
-            
-            if match:
-                data = json.loads(match.group(1))
-                self.show_id = data['movieId'] if self.is_movie else data['emsId']
-                self.napi_type = 'movie' if self.is_movie else f'tv/{self.show_id}/season'
-                self.initial_cursor = data['pageInfo']['endCursor']
-                return True
-                    
-            logger.error("Could not find metadata in page content.")
-            return False
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=self.headless)
+                page = browser.new_page()
+                page.goto(url)
+                page.wait_for_load_state('networkidle')
+                page.wait_for_timeout(2000)
+                logger.info("Page loaded successfully")
+
+                load_count = 0
+                max_loads = 30
+                no_new_reviews_count = 0
+
+                while len(reviews) < max_reviews and load_count < max_loads:
+                    reviews_before = len(reviews)
+                    reviews.update(self._extract_reviews_from_page(page))
+                    reviews_after = len(reviews)
+
+                    logger.info(f"Load iteration {load_count + 1}: Found {reviews_after} total reviews (+{reviews_after - reviews_before} new)")
+
+                    if reviews_after >= max_reviews:
+                        logger.info(f"Reached target review count ({reviews_after} >= {max_reviews})")
+                        break
+
+                    if reviews_after == reviews_before:
+                        no_new_reviews_count += 1
+                        if no_new_reviews_count >= 3:
+                            logger.info("No new reviews found for 3 consecutive iterations. Stopping.")
+                            break
+                    else:
+                        no_new_reviews_count = 0
+
+                    if not self._click_load_more(page):
+                        logger.info("No more reviews available or 'Load More' button not found")
+                        break
+                    load_count += 1
+
+                browser.close()
+                logger.info(f"Browser closed. Total reviews collected: {len(reviews)}")
+
         except Exception as e:
-            logger.error(f"Error fetching metadata: {e}")
-            return False
+            logger.error(f"Error during review fetching: {e}", exc_info=True)
 
-    def fetch_reviews(self):
-        if not hasattr(self, 'show_id') and not self.get_initial_metadata():
-            return pd.DataFrame()
+        review_list = list(reviews)[:max_reviews]
+        logger.info(f"Returning {len(review_list)} reviews")
+        return review_list
 
-        reviews_list = []
-        cursor = self.initial_cursor
-        has_next_page = True
-        
-        logger.info(f"Starting review fetch for ID: {self.show_id}")
+    def _extract_reviews_from_page(self, page: Page) -> List[str]:
+        reviews = []
+        review_cards = page.query_selector_all(self.REVIEW_CARD_SELECTOR)
+        logger.debug(f"Found {len(review_cards)} review card elements")
 
-        # To increase network usage, you'd typically use a pool, but RT's pagination 
-        # is sequential (requires the cursor from the previous page).
-        # We'll use a larger session and clear data to manage RAM.
-        session = requests.Session()
-
-        while has_next_page:
-            api_url = f"{self.base_url}/napi/{self.napi_type}/{self.show_id}/reviews/user"
-            params = {'direction': 'next', 'endCursor': cursor}
-            
+        for idx, card in enumerate(review_cards):
             try:
-                response = session.get(api_url, params=params, timeout=15)
-                if response.status_code != 200:
-                    break
-                    
-                data = response.json()
-                page_info = data.get('pageInfo', {})
-                batch = data.get('reviews', [])
-                
-                if not batch:
-                    break
-                
-                # FIXED: Correctly appending batch to list without duplication
-                for r in batch:
-                    r['source_url'] = response.url
-                reviews_list.extend(batch)
-                
-                logger.info(f"Fetched {len(batch)} reviews (Total: {len(reviews_list)}). Next cursor: {page_info.get('endCursor')}")
-                
-                has_next_page = page_info.get('hasNextPage', False)
-                cursor = page_info.get('endCursor')
-                
-                # Brief sleep to avoid rate limiting
-                time.sleep(0.1)
-                
+                span = card.query_selector(self.REVIEW_TEXT_SELECTOR)
+                if span:
+                    text = span.inner_text().strip()
+                    if self._is_valid_review(text):
+                        reviews.append(text)
+                        logger.debug(f"Card {idx}: Extracted review ({len(text)} chars)")
+                    else:
+                        logger.debug(f"Card {idx}: Skipped (invalid length: {len(text)} chars)")
             except Exception as e:
-                logger.error(f"Error fetching reviews: {e}")
-                break
-                
-        self.reviews_df = pd.DataFrame(reviews_list)
-        return self.reviews_df
+                logger.debug(f"Card {idx}: Error extracting text - {e}")
+        return reviews
 
-    def analyze_reviews(self):
-        if self.reviews_df.empty:
-            return
+    def _is_valid_review(self, text: str) -> bool:
+        return (text and self.MIN_REVIEW_LENGTH < len(text) < self.MAX_REVIEW_LENGTH and 'Load More' not in text)
 
-        # Optimization: Process text in chunks or downsample if the dataset is massive
+    def _click_load_more(self, page: Page) -> bool:
         try:
-            if 'rating' in self.reviews_df.columns:
-                def clean_rating(x):
-                    if isinstance(x, str):
-                        return float(x.replace('STAR_', '').replace('_', '.'))
-                    return float(x)
-                self.reviews_df['rating_val'] = self.reviews_df['rating'].apply(clean_rating)
-                logger.info(f"Average Rating: {round(self.reviews_df['rating_val'].mean(), 1)}")
-        except Exception as e:
-            logger.error(f"Error in analysis: {e}")
+            load_more_btn = page.query_selector(self.LOAD_MORE_SELECTOR)
+            if not load_more_btn:
+                logger.debug("'Load More' button not found")
+                return False
 
-        # Wordcloud can be RAM intensive for huge text blocks
-        if 'review' in self.reviews_df.columns:
-            logger.info("Generating word cloud...")
-            text = " ".join(str(r) for r in self.reviews_df['review'].dropna())
-            wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
-            
+            try:
+                logger.debug("Attempting JavaScript click...")
+                page.evaluate(f"document.querySelector('{self.LOAD_MORE_SELECTOR}').scrollIntoView(true)")
+                page.wait_for_timeout(300)
+                page.evaluate(f"document.querySelector('{self.LOAD_MORE_SELECTOR}').click()")
+                page.wait_for_load_state('networkidle')
+                page.wait_for_timeout(1500)
+                logger.debug("Successfully clicked 'Load More' button via JavaScript")
+                return True
+            except Exception as js_err:
+                logger.debug(f"JavaScript click failed: {js_err}")
+                try:
+                    logger.debug("Attempting Playwright click...")
+                    load_more_btn.click(timeout=2000)
+                    page.wait_for_load_state('networkidle')
+                    page.wait_for_timeout(1500)
+                    logger.debug("Successfully clicked 'Load More' button via Playwright")
+                    return True
+                except Exception as click_err:
+                    logger.debug(f"Playwright click also failed: {click_err}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error in _click_load_more: {e}")
+            return False
+
+    def generate_wordcloud(self, reviews: List[str], output_file: str = 'rotten_wordcloud.png', show: bool = False) -> bool:
+        if not reviews:
+            logger.warning("No reviews provided. Cannot generate word cloud.")
+            return False
+
+        try:
+            logger.info(f"Generating word cloud from {len(reviews)} reviews")
+            combined = ' '.join(reviews)
+            logger.debug(f"Combined text length: {len(combined)} characters")
+
+            # Create wordclouds directory if it doesn't exist
+            wordclouds_dir = Path('wordclouds')
+            wordclouds_dir.mkdir(exist_ok=True)
+
+            # Ensure output_file is in the wordclouds directory
+            if not str(output_file).startswith('wordclouds/'):
+                output_file = wordclouds_dir / output_file
+
+            wordcloud = WordCloud(width=800, height=400, background_color='white', colormap='viridis', max_words=100).generate(combined)
             plt.figure(figsize=(10, 5))
             plt.imshow(wordcloud, interpolation='bilinear')
-            plt.axis("off")
-            
-            img_filename = f"rt_review_img/{self.review_name}_{datetime.now().strftime('%Y-%m-%d')}.png"
-            plt.savefig(img_filename)
+            plt.axis('off')
+            plt.title('Rotten Tomatoes User Reviews Word Cloud', fontsize=16)
+
+            if show:
+                plt.show()
+
+            wordcloud.to_file(str(output_file))
+            logger.info(f"Word cloud saved to: {output_file}")
             plt.close()
-            logger.info(f"Word cloud saved to {img_filename}")
+            return True
+        except Exception as e:
+            logger.error(f"Error generating word cloud: {e}", exc_info=True)
+            return False
 
-    def run(self):
-        self.fetch_reviews()
-        if not self.reviews_df.empty:
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            self.reviews_df.to_csv(f"reviews_csv/{self.review_name}_{timestamp}.csv", index=False)
-            self.analyze_reviews()
 
-if __name__ == "__main__":
-    scraper = RottenTomatoesReviews('m/sonic_the_hedgehog_2020')
-    scraper.run()
+def main():
+    movie_slug = 'sonic_the_hedgehog_2020'
+    scraper = RottenTomatoesReviewScraper(headless=True, debug=False)
+    logger.info(f"Scraping Rotten Tomatoes reviews for: {movie_slug}")
+    reviews = scraper.fetch_reviews(movie_slug, max_reviews=150)
+    logger.info(f"Successfully retrieved {len(reviews)} reviews")
+
+    if reviews:
+        output_file = f'{movie_slug}_wordcloud.png'
+        scraper.generate_wordcloud(reviews, output_file=output_file)
+        logger.info("Word cloud generation completed")
+    else:
+        logger.warning("No reviews were extracted. The website structure may have changed.")
+
+
+if __name__ == '__main__':
+    main()
