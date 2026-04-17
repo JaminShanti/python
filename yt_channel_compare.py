@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pandas.plotting import register_matplotlib_converters
 import datetime as dt
+import concurrent.futures
 
 # Configure logging
 logging.basicConfig(
@@ -29,11 +30,16 @@ class YouTubeChannelCompare:
     """
     A class to track and compare YouTube channel views over time.
     """
-    def __init__(self, config_file='yt_channel_config.yaml', csv_file='yt_channel_compare.csv', output_dir='yt_output'):
+    def __init__(self, config_file='yt_channel_config.yaml', csv_file='yt_stats.csv', output_dir='yt_visuals'):
         self.config_file = config_file
         self.csv_file = csv_file
         self.output_dir = output_dir
         self.channels = self.load_config()
+        self.channel_colors = {}
+        for url, info in self.channels.items():
+            handle = self.extract_handle(url.rstrip(':'))
+            if handle:
+                self.channel_colors[handle] = info.get('color', 'white')
         self.today = dt.date.today()
         self.date_str = self.today.strftime("%Y-%m-%d")
         self.day_of_week = self.today.strftime("%A")
@@ -117,24 +123,24 @@ class YouTubeChannelCompare:
         df = self.load_data()
         new_rows = []
 
-        for name, info in self.channels.items():
-            url = info.get('url')
-            if not url:
-                logger.warning(f"No URL found for channel {name}")
-                continue
-            
-            logger.info(f"Fetching data for {name}...")
-            views = self.fetch_views(url)
-            
-            if views is not None:
-                logger.info(f"Total views for {name}: {views}")
-                new_row = {
-                    'channel_name': name,
-                    'date': self.date_str,
-                    'day_of_week': self.day_of_week,
-                    'total_views_today': views
-                }
-                new_rows.append(new_row)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_url = {executor.submit(self.fetch_views, url_key.rstrip(':')): url_key for url_key in self.channels.keys()}
+            for future in concurrent.futures.as_completed(future_to_url):
+                url_key = future_to_url[future]
+                channel_name = self.extract_handle(url_key)
+                try:
+                    views = future.result()
+                    if views is not None:
+                        logger.info(f"Total views for {channel_name}: {views}")
+                        new_row = {
+                            'channel_name': channel_name,
+                            'date': self.date_str,
+                            'day_of_week': self.day_of_week,
+                            'total_views_today': views
+                        }
+                        new_rows.append(new_row)
+                except Exception as e:
+                    logger.error(f"Error processing {url_key}: {e}")
 
         if new_rows:
             new_df = pd.DataFrame(new_rows)
@@ -178,7 +184,7 @@ class YouTubeChannelCompare:
         fig, ax = plt.subplots(figsize=(16, 5))
         
         for name, group in df.groupby('channel_name'):
-            color = self.channels.get(name, {}).get('color', 'white')
+            color = self.channel_colors.get(name, 'white')
             ax.plot(group['date'], group['diff'], label=name, color=color, linewidth=3.0)
 
         # Formatting
@@ -202,11 +208,18 @@ class YouTubeChannelCompare:
         self.update_data()
         self.generate_plot(days)
 
+    def extract_handle(self, url):
+        """
+        Extracts the handle from a YouTube URL.
+        """
+        match = re.search(r'@([\w.-]+)', url)
+        return match.group(1) if match else None
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Track and compare YouTube channel views.")
     parser.add_argument("-c", "--config", default="yt_channel_config.yaml", help="Path to configuration YAML file")
     parser.add_argument("-d", "--days", type=int, default=7, help="Number of days to plot")
-    parser.add_argument("-o", "--output", default="yt_output", help="Output directory for plots")
+    parser.add_argument("-o", "--output", default="yt_visuals", help="Output directory for plots")
     return parser.parse_args()
 
 if __name__ == "__main__":
