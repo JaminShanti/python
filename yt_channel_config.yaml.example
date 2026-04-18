@@ -1,0 +1,13 @@
+# YouTube Channel Comparison Configuration Example
+# Format: "CHANNEL_URL": {"color": "HEX_COLOR"}
+#
+# Use the @handle URL for best results.
+# The color will be used in the generated trend reports.
+
+"https://www.youtube.com/@MrBeast": {"color": "#FF0000"}
+"https://www.youtube.com/@PewDiePie": {"color": "#00FF00"}
+"https://www.youtube.com/@Markiplier": {"color": "#0000FF"}
+"https://www.youtube.com/@AsmonTV": {"color": "#FFC300"}
+"https://www.youtube.com/@TheCriticalDrinker": {"color": "#784212"}
+"https://www.youtube.com/@Coffeezilla": {"color": "#3D4E5F"}
+"https://www.youtube.com/@LexFridman": {"color": "#000000"}
