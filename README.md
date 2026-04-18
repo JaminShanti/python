@@ -23,7 +23,10 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ### Data Analysis & Reporting
 - **`NYSE Trending Report.py`**: Generates a high-performance dividend report for S&P 500, 400, and 600 stocks. Uses Yahoo Finance's bulk quote API for speed and exports reports as HTML/PDF.
-- **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time, generating visualization plots of daily performance.
+- **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time. Recently upgraded to use **Plotly** for modern, interactive visualizations.
+    - Generates interactive **HTML** reports, as well as shareable **PNG** and **PDF** exports.
+    - Features intelligent legend management (Top N channels) to ensure clarity in large datasets.
+    - Supports standalone plot generation without re-fetching data via the `--plot` switch.
 - **`rotten_tomato_user_reviews.py`**: Scrapes user reviews from Rotten Tomatoes for movies or TV shows, performs sentiment analysis (rating average), and generates word clouds.
 - **`Git_Log_Report.py`**: Analyzes a Git repository's history to generate reports on commit activity, authors, and file changes.
 - **`Corona_Mapping.py`**: Visualizes COVID-19 data, likely creating choropleth maps (e.g., `covid_choropleth_*.html`) to show spread or impact by region.
