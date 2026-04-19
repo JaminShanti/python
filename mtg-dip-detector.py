@@ -1,6 +1,5 @@
 import gzip, json, logging, os, pickle, re
 from datetime import datetime, timedelta
-
 import numpy as np, pandas as pd, requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
@@ -8,292 +7,172 @@ from tqdm import tqdm
 try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
+
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class MTGDipDetector:
-    def __init__(self, cache_dir='mtg_cache', high_window_days=90, min_drop_dollars=1.00, min_dip_pct=25.0,
-                 use_pickle_cache=True, min_set_age_days=60, min_price=1.25):
+    def __init__(self, cache_dir='mtg_cache', high_window=45, min_dip=20.0, min_drop=1.00, min_set_age=60,
+                 min_price=1.25):
         self.cache_dir = os.path.abspath(cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        self.high_window_days = high_window_days
-        self.min_drop_dollars = min_drop_dollars
-        self.min_dip_pct = min_dip_pct
-        self.use_pickle_cache = use_pickle_cache
-        self.min_set_age_days = min_set_age_days
-        self.min_price = min_price
-        
+        self.high_window, self.min_dip, self.min_drop, self.min_set_age, self.min_price = high_window, min_dip, min_drop, min_set_age, min_price
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Encoding': 'gzip'
-        })
-
-        self.illegal_sets = {'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04',
-                           'CED', 'CEI', 'UST', 'UNH', 'UGL', 'UND', 'UNF', 'PLIST', '30A'}
-        self.ui_noise = {"staples", "rank", "count", "percent", "commander", "partner", "decklist",
-                        "filter", "share", "name", "price", "color", "type", "next", "previous",
-                        "search", "menu", "mountain", "forest", "island", "swamp", "plains"}
-
-        self.TTL_STAPLES = 24
-        self.TTL_IDENTIFIERS = 168
-        self.TTL_PRICES = 24        
-
-    @staticmethod
-    def _extract_names_recursively(obj, found_set):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k == 'name' and isinstance(v, str) and 3 < len(v) < 45:
-                    if not any(char.isdigit() for char in v):
-                        found_set.add(v.lower().strip())
-                else:
-                    MTGDipDetector._extract_names_recursively(v, found_set)
-        elif isinstance(obj, list):
-            for item in obj:
-                MTGDipDetector._extract_names_recursively(item, found_set)
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        self.illegal_sets = {'WC97', 'WC98', 'WC99', 'WC00', 'WC01', 'WC02', 'WC03', 'WC04', 'CED', 'CEI', 'UST', 'UNH',
+                             'UGL', 'UND', 'UNF', 'PLIST', '30A'}
+        self.ui_noise = {"staples", "rank", "count", "percent", "commander", "partner", "decklist", "filter", "share",
+                         "name", "price", "color", "type", "next", "previous", "search", "menu", "mountain", "forest",
+                         "island", "swamp", "plains", "vibrance", "themes", "reprints", "sets", "mana", "curve",
+                         "average", "recent"}
 
     def _fast_harvest(self, url, found_set):
         try:
             r = self.session.get(url, timeout=20)
             if r.status_code == 200:
-                json_match = re.search(r'id="__NEXT_DATA__".*?>(.*?)</script>', r.text, re.DOTALL)
-                if json_match:
-                    data = json.loads(json_match.group(1))
-                    self._extract_names_recursively(data, found_set)
-                
                 soup = BeautifulSoup(r.text, 'html.parser')
-                for element in soup.find_all(['a', 'td', 'span', 'div']):
-                    text = element.get_text(strip=True).lower()
-                    if 3 < len(text) < 45 and not any(c.isdigit() for c in text):
-                        if text not in self.ui_noise:
-                            found_set.add(text)
+                for el in soup.find_all(['a', 'td', 'span', 'div']):
+                    text = el.get_text(strip=True).lower()
+                    if 3 < len(text) < 45 and not any(c.isdigit() for c in text) and text not in self.ui_noise:
+                        found_set.add(text)
                 return len(found_set) >= 25
-        except Exception as e:
-            logger.warning(f"Harvest failed for {url}: {e}")
+        except Exception:
+            pass
         return False
 
     def _get_staples(self):
-        cache_file = os.path.join(self.cache_dir, "staple_cache.json")
-        if os.path.exists(cache_file):
-            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
-            if file_age < timedelta(hours=self.TTL_STAPLES):
-                try:
-                    with open(cache_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        t16, rec = data.get('top16', []), data.get('rec', [])
-                        if len(t16) >= 25:
-                            return set(t16), set(rec)
-                except Exception: pass
-
+        cache = os.path.join(self.cache_dir, "staple_cache.json")
+        if os.path.exists(cache) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache))) < timedelta(
+                hours=24):
+            with open(cache, 'r') as f:
+                d = json.load(f)
+                return set(d['top16']), set(d['rec'])
         logger.info("Harvesting fresh staples...")
-        edhtop16_staples, edhrec_staples = set(), set()
-        self._fast_harvest("https://edhtop16.com/staples", edhtop16_staples)
-        self._fast_harvest("https://edhrec.com/top", edhrec_staples)
+        t16, rec = set(), set()
+        self._fast_harvest("https://edhtop16.com/staples", t16)
+        self._fast_harvest("https://edhrec.com/top", rec)
+        with open(cache, 'w') as f: json.dump({'top16': list(t16), 'rec': list(rec)}, f)
+        return t16, rec
 
-        edhtop16_staples -= self.ui_noise
-        edhrec_staples -= self.ui_noise
+    def _get_json(self, url, filename):
+        gz, bin = os.path.join(self.cache_dir, filename + ".gz"), os.path.join(self.cache_dir, filename + ".pkl")
+        if os.path.exists(bin) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(bin))) < timedelta(
+                hours=24):
+            with open(bin, 'rb') as f: return pickle.load(f)
+        logger.info(f"Downloading {filename}...")
+        r = self.session.get(url + ".gz", stream=True)
+        with open(gz, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024): f.write(chunk)
+        with gzip.open(gz, 'rt', encoding='utf-8') as f:
+            d = json.load(f).get("data", {})
+        with open(bin, 'wb') as f:
+            pickle.dump(d, f)
+        return d
 
-        if len(edhtop16_staples) >= 25 and len(edhrec_staples) >= 25:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump({'top16': list(edhtop16_staples), 'rec': list(edhrec_staples)}, f)
-        else:
-            raise RuntimeError("FATAL: Insufficient staple results found.")
-
-        return edhtop16_staples, edhrec_staples
-
-    def _get_json_data(self, url, filename, ttl_hours=24):
-        cache_path_gz = os.path.join(self.cache_dir, filename + ".gz")
-        cache_path_bin = os.path.join(self.cache_dir, filename + ".pkl")
-        
-        if self.use_pickle_cache and os.path.exists(cache_path_bin):
-            file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_path_bin))
-            if file_age < timedelta(hours=ttl_hours):
-                try:
-                    with open(cache_path_bin, 'rb') as f:
-                        return pickle.load(f)
-                except Exception: pass
-
-        if not os.path.exists(cache_path_gz) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_path_gz)) > timedelta(hours=ttl_hours)):
-            logger.info(f"Downloading {filename}.gz...")
-            r = self.session.get(url + ".gz", stream=True, timeout=600)
-            with open(cache_path_gz, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
-            
-        with gzip.open(cache_path_gz, 'rt', encoding='utf-8') as f:
-            data = json.load(f).get("data", {})
-            
-        if self.use_pickle_cache:
-            with open(cache_path_bin, 'wb') as f:
-                pickle.dump(data, f)
-                
-        return data
-
-    def generate_tcgplayer_import(self, df):
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
-        filename = f"TCGplayer_Import_{timestamp}.txt"
-        set_map = {'FCA': 'PIP', 'PZA': 'PLST', 'SPG': 'Special Guests', 'MH3': 'Modern Horizons 3'}
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                for _, row in df.iterrows():
-                    full_name = row['Card Name']
-                    clean_name = full_name.split(' // ')[0]
-                    set_code = row['Set']
-                    final_set = set_map.get(set_code, set_code)
-                    if set_code in ['PZA', 'FCA'] or len(final_set) > 3:
-                        f.write(f"1 {clean_name}\n")
-                    else:
-                        f.write(f"1 {clean_name} [{final_set}]\n")
-            logger.info(f"TCGplayer import file saved: {filename}")
-        except Exception as e:
-            logger.error(f"Failed to generate import: {e}")
+    def generate_tcg_import(self, df):
+        fname = f"TCGplayer_Import_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt"
+        set_map = {'FCA': 'PIP', 'PZA': 'PLST', 'SPG': 'Special Guests', 'MH3': 'Modern Horizons 3',
+                   'SOA': 'Special Guests', 'PLST': 'The List'}
+        with open(fname, 'w') as f:
+            for _, r in df.iterrows():
+                s = r['Set']
+                f.write(f"1 {r['Card Name'].split(' // ')[0]}" + (
+                    f" [{set_map.get(s, s)}]\n" if s not in ['PZA', 'FCA'] and len(s) <= 3 else "\n"))
+        logger.info(f"TCGplayer import saved: {fname}")
 
     def generate_pdf(self, df):
-        if not HAS_MATPLOTLIB:
-            logger.warning("Matplotlib is not available, skipping PDF report generation.")
-            return
-
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
-        pdf_filename = f"MTG_Dips_{timestamp}.pdf"
-        png_filename = f"MTG_Dips_{timestamp}.png"
-
-        pdf_df = df.copy()
-        pdf_df['Price'] = pdf_df['Price'].map('${:,.2f}'.format)
-        pdf_df['High Ref'] = pdf_df['High Ref'].map('${:,.2f}'.format)
-        pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-        ax.axis('tight')
+        if not HAS_MATPLOTLIB: return
+        pdf_f = f"MTG_Dips_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.pdf"
+        fig, ax = plt.subplots(figsize=(11, 8));
+        ax.axis('tight');
         ax.axis('off')
-        
-        title = f"MTG Staple Dips & Reprint Opportunities\n{datetime.now().strftime('%Y-%m-%d')}\n" \
-                f"(Min ${self.min_drop_dollars} dip, {self.min_dip_pct}% min drop)"
-        plt.title(title, fontsize=12, fontweight='bold', pad=30)
-
+        pdf_df = df.copy()
+        for col in ['Price', 'High Ref']: pdf_df[col] = pdf_df[col].map('${:,.2f}'.format)
+        pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
+        plt.title(f"MTG Staple Dips (TCGplayer Only)\n{datetime.now().strftime('%Y-%m-%d')}", fontsize=12,
+                  fontweight='bold', pad=20)
         table = ax.table(cellText=pdf_df.values, colLabels=pdf_df.columns, cellLoc='left', loc='upper center')
-        table.auto_set_font_size(False)
+        table.auto_set_font_size(False);
         table.set_fontsize(8)
-        
-        col_widths = [0.30, 0.08, 0.12, 0.12, 0.12, 0.12, 0.14] 
-        for i, width in enumerate(col_widths):
-            for row in range(len(pdf_df) + 1):
-                cell = table.get_celld()[(row, i)]
-                cell.set_width(width)
-                if i > 3: cell.set_text_props(ha='center')
+        for i, w in enumerate([0.28, 0.08, 0.12, 0.10, 0.10, 0.10, 0.10, 0.12]):
+            for row in range(len(pdf_df) + 1): table.get_celld()[(row, i)].set_width(w)
+        with PdfPages(pdf_f) as pdf:
+            pdf.savefig(fig, bbox_inches='tight', dpi=300); plt.close()
+        logger.info(f"PDF saved: {pdf_f}")
 
-        for (row, col), cell in table.get_celld().items():
-            cell.set_linewidth(0.5)
-            if row == 0:
-                cell.set_text_props(weight='bold', color='white')
-                cell.set_facecolor('#2d3436')
-                cell.set_text_props(ha='center')
-            else:
-                if row % 2 == 0: cell.set_facecolor('#f5f6fa')
+    def get_market_dips(self):
+        t16, rec = self._get_staples();
+        all_s = t16.union(rec)
+        ids = self._get_json("https://mtgjson.com/api/v5/AllIdentifiers.json", "AllIdentifiers")
+        prices = self._get_json("https://mtgjson.com/api/v5/AllPrices.json", "AllPrices")
+        sets = self._get_json("https://mtgjson.com/api/v5/SetList.json", "SetList")
+        rel_dates = {s['code']: s['releaseDate'] for s in sets if 'code' in s and 'releaseDate' in s}
+        date_limit = (datetime.now() - timedelta(days=self.high_window)).strftime("%Y-%m-%d")
 
-        with PdfPages(pdf_filename) as pdf: pdf.savefig(fig, bbox_inches='tight', dpi=300)
-        fig.savefig(png_filename, bbox_inches='tight', dpi=300, format='png', facecolor='white')
-        plt.close()
-        logger.info(f"Reports saved: {pdf_filename}, {png_filename}")
-
-    def get_market_dips(self, export_pdf=True, export_tcg=True):
-        top16_set, rec_set = self._get_staples()
-        all_staples = top16_set.union(rec_set)
-        if not all_staples: return
-
-        ids_data = self._get_json_data("https://mtgjson.com/api/v5/AllIdentifiers.json", "AllIdentifiers", ttl_hours=self.TTL_IDENTIFIERS)
-        prices_data = self._get_json_data("https://mtgjson.com/api/v5/AllPrices.json", "AllPrices", ttl_hours=self.TTL_PRICES)
-        sets_data = self._get_json_data("https://mtgjson.com/api/v5/SetList.json", "SetList", ttl_hours=self.TTL_IDENTIFIERS)
-        
-        set_release_dates = {s['code']: s['releaseDate'] for s in sets_data if 'code' in s and 'releaseDate' in s}
-        date_limit = (datetime.now() - timedelta(days=self.high_window_days)).strftime("%Y-%m-%d")
-
-        logger.info(f"Grouping {len(all_staples)} staples by name...")
-        name_to_uuids = {}
-        for uuid, card in ids_data.items():
-            lower_name = card.get("name", "").lower()
-            if lower_name in all_staples and card.get("setCode") not in self.illegal_sets:
-                if lower_name not in name_to_uuids:
-                    name_to_uuids[lower_name] = []
-                name_to_uuids[lower_name].append((uuid, card.get("name"), card.get("setCode")))
-        
-        del ids_data
+        n_to_p = {}
+        for uuid, c in ids.items():
+            name = c.get("name", "").lower()
+            if name in all_s and c.get("language") == "English" and c.get("setCode") not in self.illegal_sets:
+                if name not in n_to_p: n_to_p[name] = []
+                n_to_p[name].append({'uuid': uuid, 'name': c.get("name"), 'set': c.get("setCode")})
 
         results = []
-        for lower_name, uuids in tqdm(name_to_uuids.items(), desc="Analyzing Market"):
-            all_printings = []
-            for uuid, display_name, set_code in uuids:
-                hist = prices_data.get(uuid, {}).get("paper", {}).get("tcgplayer", {}).get("retail", {}).get("normal", {})
+        for name, printings in tqdm(n_to_p.items(), desc="Analyzing TCGplayer"):
+            proc = []
+            for p in printings:
+                hist = prices.get(p['uuid'], {}).get("paper", {}).get("tcgplayer", {}).get("retail", {}).get("normal",
+                                                                                                             {})
                 if not hist: continue
-                valid_hist = {d: float(v) for d, v in hist.items() if d >= date_limit}
-                if not valid_hist: continue
-                latest_price = float(hist[max(hist.keys())])
-                
-                sorted_vals = sorted(valid_hist.values())
-                robust_high = sorted_vals[-max(1, int(len(sorted_vals) * 0.05))]
-                
-                rel_date = set_release_dates.get(set_code)
-                is_stable = False
-                if rel_date:
-                    days_old = (datetime.now() - datetime.strptime(rel_date, "%Y-%m-%d")).days
-                    if days_old >= self.min_set_age_days and len(valid_hist) >= (self.high_window_days * 0.5):
-                        is_stable = True
-                
-                all_printings.append({'name': display_name, 'set': set_code, 'curr': latest_price, 'high': robust_high, 'is_stable': is_stable, 'uuid': uuid})
+                v_hist = {d: float(v) for d, v in hist.items() if d >= date_limit}
+                if not v_hist: continue
+                curr, l_date = float(hist[max(hist.keys())]), max(hist.keys())
+                vals = sorted(v_hist.values());
+                med = float(np.median(vals))
+                high = vals[int(len(vals) * 0.80)]
+                if high > med * 2.5: high = med * 1.5
+                stable = (datetime.now() - datetime.strptime(rel_dates.get(p['set'], "2000-01-01"),
+                                                             "%Y-%m-%d")).days >= self.min_set_age
+                fresh = (datetime.now() - datetime.strptime(l_date, "%Y-%m-%d")).days <= 10
+                proc.append({**p, 'curr': curr, 'high': high, 'stable': stable, 'fresh': fresh})
 
-            if not all_printings: continue
+            if not proc: continue
+            g_med = np.median([p['high'] for p in proc])
+            for p in proc:
+                if p['high'] > g_med * 3.0: p['high'] = g_med
 
-            stable_printings = [p for p in all_printings if p['is_stable']]
-            market_avg = float(np.median([p['high'] for p in (stable_printings or all_printings)]))
+            stable_pool = [p for p in proc if p['stable']]
+            st_ref = min([p for p in stable_pool if p['high'] <= np.median([p['high'] for p in stable_pool]) * 2.0],
+                         key=lambda x: x['high']) if stable_pool else min(proc, key=lambda x: x['curr'])
 
-            best_deal = min(all_printings, key=lambda x: x['curr'])
-            if best_deal['curr'] < self.min_price: continue
+            for p in proc:
+                if not p['fresh']: continue
+                analysis, h_ref, r_set = None, 0, ""
+                if not p['stable']:
+                    if p['curr'] <= st_ref['high'] * (1 - self.min_dip / 100): analysis, h_ref, r_set = "Reprint", \
+                    st_ref['high'], st_ref['set']
+                elif p['curr'] <= p['high'] * (1 - self.min_dip / 100):
+                    analysis, h_ref, r_set = "", p['high'], p['set']
 
-            is_reprint = not best_deal['is_stable']
-            
-            if is_reprint:
-                high_ref = min(best_deal['high'], market_avg * 1.15)
-                high_ref = max(high_ref, market_avg)
-                reprint_label = "Reprint"
-            else:
-                high_ref = best_deal['high']
-                reprint_label = ""
+                if analysis is not None:
+                    drop_amt = h_ref - p['curr']
+                    if (drop_amt / h_ref * 100) >= self.min_dip and drop_amt >= self.min_drop:
+                        results.append({"Card Name": p['name'], "Set": p['set'], "Analysis": analysis,
+                                        "Source": "edhtop16" if name in t16 else "edhrec", "Price": p['curr'],
+                                        "High Ref": h_ref, "Ref Set": "" if r_set == p['set'] else r_set,
+                                        "Dip %": round((drop_amt / h_ref * 100), 2)})
 
-            drop_amt = high_ref - best_deal['curr']
-            drop_pct = (drop_amt / high_ref * 100) if high_ref > 0 else 0
-            
-            if drop_pct >= self.min_dip_pct and drop_amt >= self.min_drop_dollars:
-                source = "edhtop16" if lower_name in top16_set else "edhrec"
-                results.append({
-                    "Card Name": best_deal['name'],
-                    "Set": best_deal['set'],
-                    "Reprints": reprint_label,
-                    "Source": source,
-                    "Price": best_deal['curr'],
-                    "High Ref": high_ref,
-                    "Dip %": round(drop_pct, 2)
-                })
-
-        del prices_data
         df = pd.DataFrame(results)
-        if df.empty:
-            logger.info("No honest dips found.")
-            return
+        if df.empty: return logger.info("No dips found.")
+        df = df.sort_values("Dip %", ascending=False).drop_duplicates(subset=['Card Name', 'Analysis'])
+        print(f"\n[REPORT] MTG Staple Dips (Anti-Gaslight):\n{df.to_string(index=False)}")
+        self.generate_pdf(df);
+        self.generate_tcg_import(df)
 
-        report_df = df.sort_values("Dip %", ascending=False).copy()
-        print_df = report_df.copy()
-        print_df['Price'] = print_df['Price'].map('${:,.2f}'.format)
-        print_df['High Ref'] = print_df['High Ref'].map('${:,.2f}'.format)
-        print_df['Dip %'] = print_df['Dip %'].map('{:.1f}%'.format)
-        
-        logger.info("\n[REPORT] MTG Staple Dips & Deals (Anti-Gaslight):")
-        print(print_df.to_string(index=False))
-
-        if export_pdf: self.generate_pdf(report_df)
-        if export_tcg: self.generate_tcgplayer_import(report_df)
 
 if __name__ == "__main__":
     MTGDipDetector().get_market_dips()
