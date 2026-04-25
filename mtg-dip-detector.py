@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class MTGDipDetector:
-    def __init__(self, cache_dir='mtg_cache', high_window=45, min_dip=20.0, min_drop=1.00, min_set_age=60,
+    def __init__(self, cache_dir='mtg_cache', high_window=45, min_dip=25.0, min_drop=1.00, min_set_age=60,
                  min_price=1.25):
         self.cache_dir = os.path.abspath(cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -76,24 +76,28 @@ class MTGDipDetector:
 
     def generate_tcg_import(self, df):
         fname = f"TCGplayer_Import_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt"
-        set_map = {'FCA': 'PIP', 'PZA': 'PLST', 'SPG': 'Special Guests', 'MH3': 'Modern Horizons 3',
-                   'SOA': 'Special Guests', 'PLST': 'The List'}
-        with open(fname, 'w') as f:
+        with open(fname, 'w', encoding='utf-8') as f:
             for _, r in df.iterrows():
-                s = r['Set']
-                f.write(f"1 {r['Card Name'].split(' // ')[0]}" + (
-                    f" [{set_map.get(s, s)}]\n" if s not in ['PZA', 'FCA'] and len(s) <= 3 else "\n"))
+                card_name = r['Card Name'].split(' // ')[0].strip()
+                card_name = card_name.replace('’', "'").replace('“', '"').replace('”', '"')
+                # Only write card name, without set information, for maximum TCGplayer compatibility
+                f.write(f"1 {card_name}\n")
         logger.info(f"TCGplayer import saved: {fname}")
 
     def generate_pdf(self, df):
         if not HAS_MATPLOTLIB: return
-        pdf_f = f"MTG_Dips_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.pdf"
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        pdf_f = f"MTG_Dips_{timestamp}.pdf"
+        png_f = f"MTG_Dips_{timestamp}.png"
+
         fig, ax = plt.subplots(figsize=(11, 8));
         ax.axis('tight');
         ax.axis('off')
         pdf_df = df.copy()
-        for col in ['Price', 'High Ref']: pdf_df[col] = pdf_df[col].map('${:,.2f}'.format)
-        pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
+        for col in ['Price', 'High Ref']:
+            if col in pdf_df.columns: pdf_df[col] = pdf_df[col].map('${:,.2f}'.format)
+        if 'Dip %' in pdf_df.columns: pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
+
         plt.title(f"MTG Staple Dips (TCGplayer Only)\n{datetime.now().strftime('%Y-%m-%d')}", fontsize=12,
                   fontweight='bold', pad=20)
         table = ax.table(cellText=pdf_df.values, colLabels=pdf_df.columns, cellLoc='left', loc='upper center')
@@ -101,9 +105,17 @@ class MTGDipDetector:
         table.set_fontsize(8)
         for i, w in enumerate([0.28, 0.08, 0.12, 0.10, 0.10, 0.10, 0.10, 0.12]):
             for row in range(len(pdf_df) + 1): table.get_celld()[(row, i)].set_width(w)
+
+        # Save PDF
         with PdfPages(pdf_f) as pdf:
-            pdf.savefig(fig, bbox_inches='tight', dpi=300); plt.close()
+            pdf.savefig(fig, bbox_inches='tight', dpi=300);
         logger.info(f"PDF saved: {pdf_f}")
+
+        # Save PNG
+        plt.savefig(png_f, bbox_inches='tight', dpi=300)
+        logger.info(f"PNG saved: {png_f}")
+
+        plt.close(fig)
 
     def get_market_dips(self):
         t16, rec = self._get_staples();
@@ -154,7 +166,7 @@ class MTGDipDetector:
                 analysis, h_ref, r_set = None, 0, ""
                 if not p['stable']:
                     if p['curr'] <= st_ref['high'] * (1 - self.min_dip / 100): analysis, h_ref, r_set = "Reprint", \
-                    st_ref['high'], st_ref['set']
+                        st_ref['high'], st_ref['set']
                 elif p['curr'] <= p['high'] * (1 - self.min_dip / 100):
                     analysis, h_ref, r_set = "", p['high'], p['set']
 
