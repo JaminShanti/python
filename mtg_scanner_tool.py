@@ -1,9 +1,11 @@
-import time
-import re
+import time, re, os, pickle, requests
 from urllib.parse import unquote, quote
 from collections import Counter
-import requests
 from playwright.sync_api import sync_playwright
+
+# Cache directory for mtg_scanner_tool
+SCANNER_CACHE_DIR = "mtg_scanner_cache"
+os.makedirs(SCANNER_CACHE_DIR, exist_ok=True)
 
 # Add or remove EDHTop16 URLs here
 COMMANDER_URLS = [
@@ -16,19 +18,15 @@ COMMANDER_URLS = [
 # Lowered threshold to catch split utility lands and duals
 MIN_PERCENTAGE = 0.20
 
-# Add cards you DO NOT want in your generated lists here (e.g., expensive staples you want to skip)
-EXCLUDED_CARDS = [
-    "Talon Gates of Madara",
-    "Gaea's Cradle",
-    "Crop Rotation",
-    "Legolas's Quick Reflexes",
-    "Survival of the Fittest ",
-    "Bazaar of Baghdad",
-    "Tabernacle at Pendrell Vale",
-    "Boseiju, Who Endures",
-    "City of Traitors",
-    "Last March of the Ents"
-]
+# Load EXCLUDED_CARDS from file
+EXCLUDED_CARDS_FILE = os.path.join(SCANNER_CACHE_DIR, "excluded_cards.txt")
+EXCLUDED_CARDS = set()
+if os.path.exists(EXCLUDED_CARDS_FILE):
+    with open(EXCLUDED_CARDS_FILE, 'r') as f:
+        EXCLUDED_CARDS = {line.strip().lower() for line in f if line.strip()}
+else:
+    print(f"Warning: {EXCLUDED_CARDS_FILE} not found. No cards will be excluded.")
+
 
 # Strict categorization rules matching modern MTG layouts
 TYPE_ORDER = ["Commander", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker", "Land"]
@@ -47,14 +45,24 @@ def auto_scroll_to_bottom(page):
 
 
 def get_topdeck_urls(page, commander_url):
+    cache_file = os.path.join(SCANNER_CACHE_DIR, f"topdeck_urls_{hash(commander_url)}.pkl")
+    
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+
     page.goto(commander_url, wait_until="networkidle")
     auto_scroll_to_bottom(page)
 
     html_content = page.content()
     td_regex = re.compile(r"topdeck\.gg/deck/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+")
     matches = td_regex.findall(html_content)
+    urls = list(set([f"https://{match}" for match in matches]))
 
-    return list(set([f"https://{match}" for match in matches]))
+    with open(cache_file, 'wb') as f:
+        pickle.dump(urls, f)
+    
+    return urls
 
 
 def scrape_deck_data(page, url):
@@ -105,20 +113,33 @@ def scrape_deck_data(page, url):
 
 def get_scryfall_data(card_name):
     """Fetches clean layout data and exact type rules from Scryfall."""
+    cache_file = os.path.join(SCANNER_CACHE_DIR, f"scryfall_{hash(card_name)}.pkl")
+
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+
     time.sleep(0.1)  # Polite rate limiting rule for Scryfall API (10 requests/second)
     url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
     try:
         response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
         if response.status_code == 200:
             res_data = response.json()
-            # Handle split/MDFCs card type lines seamlessly
             type_line = res_data.get("type_line", "")
             if "card_faces" in res_data and not type_line:
                 type_line = res_data["card_faces"][0].get("type_line", "")
-            return res_data.get("name", card_name), type_line
+            result = (res_data.get("name", card_name), type_line)
+            
+            with open(cache_file, 'wb') as f:
+                pickle.dump(result, f)
+            return result
     except Exception:
         pass
-    return card_name, ""
+    
+    result = (card_name, "")
+    with open(cache_file, 'wb') as f:
+        pickle.dump(result, f)
+    return result
 
 
 def categorize_card(type_line):
@@ -176,7 +197,8 @@ def analyze_commander(page, commander_url):
                 "Artifact", "Creature", "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"]
 
     # Normalize exclusions to lowercase for safe matching
-    excluded_lower = {c.lower() for c in EXCLUDED_CARDS}
+    # EXCLUDED_CARDS is already a set of lowercase strings
+    excluded_lower = EXCLUDED_CARDS
 
     # Calculate average basic lands
     avg_basics = {}

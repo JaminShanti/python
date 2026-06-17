@@ -38,7 +38,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 ### Market Monitoring & Hobby Projects
 
 * **`mtg-dip-detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements, particularly useful for monitoring Reserved List assets.
-* **`mtg_scanner_tool.py`**: A custom market data scanner designed to aid in evaluating collection values and optimizing deck builds for the Commander format (such as Rocco, Cabaretti Caterer).
+* **`mtg_scanner_tool.py`**: A custom market data scanner designed to aid in evaluating collection values and optimizing deck builds for the Commander format (such as Rocco, Cabaretti Caterer). It now supports **caching** for faster subsequent runs and uses an external `excluded_cards.txt` file for easy management of cards to ignore.
 
 ### Miscellaneous
 
@@ -58,3 +58,4 @@ Install:
 ```bash
 pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds pyyaml yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat playwright beautifulsoup4
 playwright install chromium
+```
