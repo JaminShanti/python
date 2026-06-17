@@ -49,7 +49,6 @@ def auto_scroll_to_bottom(page):
 
 
 def get_topdeck_urls(page, commander_url, force_refresh=False):
-    # Use a single cache file for all topdeck URLs, keyed by commander_url
     topdeck_cache = {}
     if os.path.exists(TOPDECK_URLS_CACHE_FILE):
         with open(TOPDECK_URLS_CACHE_FILE, 'rb') as f:
@@ -81,7 +80,6 @@ if os.path.exists(TOPDECK_DECK_DATA_CACHE_FILE):
 
 
 def scrape_deck_data(page, url):
-    # Check if we've already scraped this deck
     if url in _topdeck_deck_cache:
         return _topdeck_deck_cache[url]
 
@@ -125,10 +123,7 @@ def scrape_deck_data(page, url):
 
         clean_cards = [n for n in data['cards'] if not any(b in n.lower() for b in bad) and not re.match(r'^\d', n)]
 
-        # Package the result
         result = (clean_cards, data['basicCounts'])
-
-        # Save to cache
         _topdeck_deck_cache[url] = result
         with open(TOPDECK_DECK_DATA_CACHE_FILE, 'wb') as f:
             pickle.dump(_topdeck_deck_cache, f)
@@ -148,11 +143,10 @@ if os.path.exists(SCRYFALL_DATA_CACHE_FILE):
 
 
 def get_scryfall_data(card_name):
-    """Fetches clean layout data and exact type rules from Scryfall, using a global cache."""
     if card_name in _scryfall_cache:
         return _scryfall_cache[card_name]
 
-    time.sleep(0.1)  # Polite rate limiting rule for Scryfall API (10 requests/second)
+    time.sleep(0.1)  # Polite rate limiting rule for Scryfall API
     url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
     try:
         response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
@@ -164,7 +158,6 @@ def get_scryfall_data(card_name):
             result = (res_data.get("name", card_name), type_line)
 
             _scryfall_cache[card_name] = result
-            # Save cache after each new entry for robustness
             with open(SCRYFALL_DATA_CACHE_FILE, 'wb') as f:
                 pickle.dump(_scryfall_cache, f)
             return result
@@ -179,7 +172,6 @@ def get_scryfall_data(card_name):
 
 
 def categorize_card(type_line):
-    """Sorts card types strictly prioritizing Land -> Creature -> down the line."""
     if not type_line:
         return "Creature"
     tl = type_line.lower()
@@ -226,15 +218,35 @@ def analyze_commander(page, commander_url):
         for k in total_basics:
             total_basics[k] += b_counts.get(k, 0)
 
-    # Clean UI artifacts out of data collection
     ui_noise = ["Mountain", "Forest", "Plains", "Island", "Swamp",
                 "Snow-Covered Mountain", "Snow-Covered Forest", "Snow-Covered Plains",
                 "Snow-Covered Island", "Snow-Covered Swamp",
                 "Artifact", "Creature", "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"]
-
-    # Normalize exclusions to lowercase for safe matching
-    # EXCLUDED_CARDS is already a set of lowercase strings
     excluded_lower = EXCLUDED_CARDS
+
+    # --- NEW: Calculate True Average Category Counts ---
+    total_lands_all_decks = sum(total_basics.values())
+    total_instants_all_decks = 0
+
+    unique_cards = [card for card in card_counter.keys()
+                    if
+                    card not in ui_noise and card.lower() not in excluded_lower and card.lower() != commander_name.lower()]
+
+    print(f"\nAnalyzing {len(unique_cards)} unique cards to calculate true category averages...")
+    for idx, card in enumerate(unique_cards, 1):
+        print(f"Checking Scryfall typelines {idx}/{len(unique_cards)}...", end="\r")
+        _, type_line = get_scryfall_data(card)
+        cat = categorize_card(type_line)
+        if cat == "Land":
+            total_lands_all_decks += card_counter[card]
+        elif cat == "Instant":
+            total_instants_all_decks += card_counter[card]
+
+    print(" " * 80, end="\r")  # Clear the loading line
+
+    dynamic_min_lands = round(total_lands_all_decks / len(urls))
+    dynamic_min_instants = round(total_instants_all_decks / len(urls))
+    print(f"Targeting dynamic averages: {dynamic_min_lands} Lands | {dynamic_min_instants} Instants")
 
     # Calculate average basic lands
     avg_basics = {}
@@ -245,70 +257,136 @@ def analyze_commander(page, commander_url):
             avg_basics[land.capitalize()] = avg
             total_avg_basics += avg
 
-    # Compile non-basic cards reaching consensus thresholds
     valid_cards = []
     for card, count in card_counter.most_common():
         if card in ui_noise or card.lower() == commander_name.lower():
             continue
-        # Skip card if it's in the exclusion list
         if card.lower() in excluded_lower:
             continue
-
         if (count / len(urls)) >= MIN_PERCENTAGE:
             valid_cards.append(card)
 
-    # Cap the non-basics to fit the 100-card limit (99 - average basics)
     max_non_basics = 99 - total_avg_basics
     high_consensus_pool = valid_cards[:max_non_basics]
-
-    print(f"\nVerifying card mechanics via Scryfall for {len(high_consensus_pool)} meta cards...")
 
     deck_list = {t: [] for t in TYPE_ORDER}
     deck_list["Commander"] = [f"1 {commander_name}"]
 
-    current_count = 1  # Starting with commander
+    current_count = 1
     for idx, card in enumerate(high_consensus_pool, 1):
-        print(f"Mapping card types {idx}/{len(high_consensus_pool)}...", end="\r")
         real_name, type_line = get_scryfall_data(card)
         category = categorize_card(type_line)
         deck_list[category].append(f"1 {real_name}")
         current_count += 1
 
-    print(" " * 60, end="\r")  # Clear the line
+    # --- SAFETY NET: Enforce Dynamic Minimum Instant Count ---
+    current_instants = len(deck_list["Instant"])
+    if current_instants < dynamic_min_instants:
+        instant_deficit = dynamic_min_instants - current_instants
 
-    # Dynamically inject basic lands to hit exactly 100 cards
-    slots_remaining = 100 - current_count
-    if slots_remaining > 0 and avg_basics:
-        # Sort basics by average occurrence rate
-        sorted_basics = sorted(avg_basics.items(), key=lambda x: x[1], reverse=True)
+        # Find the next best instants from the overall pool that didn't make the consensus cut
+        next_best_instants = []
+        for card, count in card_counter.most_common():
+            if card in ui_noise or card.lower() == commander_name.lower() or card.lower() in excluded_lower:
+                continue
+            if card not in high_consensus_pool:
+                _, type_line = get_scryfall_data(card)
+                if categorize_card(type_line) == "Instant":
+                    next_best_instants.append(card)
+                    if len(next_best_instants) == instant_deficit:
+                        break
 
-        for land_name, count in sorted_basics:
-            if slots_remaining <= 0:
+        # Swap out the weakest non-land, non-instant cards to make room
+        instants_to_add = len(next_best_instants)
+        cards_removed = 0
+        for card in reversed(high_consensus_pool):
+            if cards_removed >= instants_to_add:
                 break
-            allocated = min(count, slots_remaining)
-            deck_list["Land"].append(f"{allocated} {land_name}")
-            slots_remaining -= allocated
 
-        # Edge-case: If we still have slots open, dump the remaining slots into the most played basic land
-        if slots_remaining > 0:
-            primary_land = sorted_basics[0][0]
-            # Find it and update the count
-            for idx, entry in enumerate(deck_list["Land"]):
-                if primary_land in entry:
-                    old_count = int(entry.split(' ', 1)[0])
-                    deck_list["Land"][idx] = f"{old_count + slots_remaining} {primary_land}"
+            for category in TYPE_ORDER:
+                if category in ["Land", "Commander", "Instant"]:
+                    continue
+
+                matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                if matched_item:
+                    deck_list[category].remove(matched_item)
+                    current_count -= 1
+                    cards_removed += 1
+                    print(f"   -> Cut '{card}' to make room for required average Instants.")
                     break
 
-    # Final Output Rendering - Clean TCGPlayer Format
+        # Add the rescued instants into the deck
+        for card in next_best_instants:
+            real_name, type_line = get_scryfall_data(card)
+            deck_list["Instant"].append(f"1 {real_name}")
+            current_count += 1
+            print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
+
+    # --- SAFETY NET: Enforce Dynamic Minimum Land Count ---
+    current_lands = len(deck_list["Land"])
+    slots_remaining = 100 - current_count
+
+    if (current_lands + slots_remaining) < dynamic_min_lands:
+        deficit = dynamic_min_lands - (current_lands + slots_remaining)
+
+        cards_removed = 0
+        for card in reversed(high_consensus_pool):
+            if cards_removed >= deficit:
+                break
+
+            for category in TYPE_ORDER:
+                # Protect both Lands AND our carefully curated Instants from being cut here
+                if category in ["Land", "Commander", "Instant"]:
+                    continue
+
+                matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                if matched_item:
+                    deck_list[category].remove(matched_item)
+                    current_count -= 1
+                    slots_remaining += 1
+                    cards_removed += 1
+                    print(f"   -> Cut '{card}' to make room for required average Lands.")
+                    break
+
+    # --- INJECT BASIC LANDS ---
+    primary_basic = "Forest"
+    if avg_basics:
+        primary_basic = sorted(avg_basics.items(), key=lambda x: x[1], reverse=True)[0][0]
+    else:
+        most_seen = max(total_basics, key=total_basics.get)
+        if total_basics[most_seen] > 0:
+            primary_basic = most_seen.capitalize()
+
+    if slots_remaining > 0:
+        if avg_basics:
+            sorted_basics = sorted(avg_basics.items(), key=lambda x: x[1], reverse=True)
+            for land_name, count in sorted_basics:
+                if slots_remaining <= 0:
+                    break
+                allocated = min(count, slots_remaining)
+                deck_list["Land"].append(f"{allocated} {land_name}")
+                slots_remaining -= allocated
+
+        if slots_remaining > 0:
+            found = False
+            for idx, entry in enumerate(deck_list["Land"]):
+                if primary_basic in entry:
+                    old_count = int(entry.split(' ', 1)[0])
+                    deck_list["Land"][idx] = f"{old_count + slots_remaining} {primary_basic}"
+                    found = True
+                    break
+
+            if not found:
+                deck_list["Land"].append(f"{slots_remaining} {primary_basic}")
+
+    # Final Output Rendering
     print(f"\n\n### {commander_name} - Meta Optimized Decklist")
     for category in TYPE_ORDER:
         cards_in_cat = deck_list[category]
         if cards_in_cat:
-            # Sum up card counts dynamically inside category block strings
             cat_total = sum([int(c.split(' ', 1)[0]) for c in cards_in_cat])
             print(f"\n### {category} ({cat_total})")
-            for card_entry in sorted(cards_in_cat,
-                                     key=lambda x: x.split(' ', 1)[1]):  # Sort alphabetically by card name
+            for card_entry in sorted(cards_in_cat, key=lambda x: x.split(' ', 1)[1]):
                 print(card_entry)
 
 
