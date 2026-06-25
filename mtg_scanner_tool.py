@@ -36,6 +36,7 @@ class MTGDeckScanner:
             "https://edhtop16.com/commander/Magda%2C%20Brazen%20Outlaw?timePeriod=THREE_MONTHS",
             "https://edhtop16.com/commander/Winota%2C%20Joiner%20of%20Forces?timePeriod=THREE_MONTHS",
             "https://edhtop16.com/commander/Rocco%2C%20Cabaretti%20Caterer?timePeriod=THREE_MONTHS",
+            "https://edhtop16.com/commander/Azami%2C%20Lady%20of%20Scrolls?timePeriod=SIX_MONTHS",
         ]
 
         # Load Exclusions and Caches
@@ -45,12 +46,24 @@ class MTGDeckScanner:
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
 
     def _load_exclusions(self):
-        """Loads user-defined card exclusions from a text file."""
+        """Loads user-defined card exclusions and replacements from a text file."""
+        exclusions = {}
         if os.path.exists(self.excluded_file):
             with open(self.excluded_file, 'r') as f:
-                return {line.strip().lower() for line in f if line.strip()}
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Check for replacement syntax (e.g., "City of Traitors -> Crystal Vein")
+                    if '->' in line:
+                        target, replacement = line.split('->', 1)
+                        exclusions[target.strip().lower()] = replacement.strip()
+                    else:
+                        # Pure exclusion with no replacement
+                        exclusions[line.lower()] = None
+            return exclusions
         print(f"Warning: {self.excluded_file} not found. No cards will be excluded.")
-        return set()
+        return exclusions
 
     def _load_cache(self, filepath):
         """Helper to load a pickle cache."""
@@ -202,7 +215,21 @@ class MTGDeckScanner:
         for i, url in enumerate(urls, 1):
             print(f"Processing decklist {i}/{len(urls)}...", end="\r")
             cards, b_counts = self.scrape_deck_data(page, url)
-            card_counter.update(cards)
+
+            # --- PROCESS EXCLUSIONS AND REPLACEMENTS ---
+            processed_cards = set()
+            for c in cards:
+                c_lower = c.lower()
+                if c_lower in self.excluded_cards:
+                    replacement = self.excluded_cards[c_lower]
+                    if replacement:
+                        processed_cards.add(replacement)
+                    # If replacement is None, the card is excluded entirely
+                else:
+                    processed_cards.add(c)
+
+            card_counter.update(processed_cards)
+
             for k in total_basics:
                 total_basics[k] += b_counts.get(k, 0)
 

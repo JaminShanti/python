@@ -14,7 +14,8 @@ logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 class NyseTrendingReport:
     """
     Stabilized Dividend Report with Sharpe Ratio and Stale-if-Error Caching.
-    Filters the S&P 500, 400, and 600 for reliable yield opportunities.
+    Filters the S&P 500, 400, and 600 for reliable, high-yielding opportunities
+    using a Blended Score (Sharpe Ratio * Dividend Yield).
     """
     def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
         self.cache_path = os.path.abspath(cache_path)
@@ -84,7 +85,7 @@ class NyseTrendingReport:
             symbols = self._get_wikipedia_table(url)
             logger.info(f"Found {len(symbols)} symbols for {name}")
             for s in symbols: all_data.append({'symbol': s, 'index': name})
-        
+
         if not all_data: return []
         df = pd.DataFrame(all_data).drop_duplicates('symbol')
         df.to_csv(self.cache_path, index=False)
@@ -96,27 +97,27 @@ class NyseTrendingReport:
         try:
             time.sleep(random.uniform(0.1, 0.4)) # Polite jitter
             t = yf.Ticker(symbol)
-            
+
             # 1. Price History for Sharpe Ratio
             hist = t.history(period="1y")
             if hist.empty or len(hist) < 50:
                 return None
-            
+
             price = hist['Close'].iloc[-1]
             returns = hist['Close'].pct_change().dropna()
             ann_return = returns.mean() * 252
             ann_vol = returns.std() * np.sqrt(252)
             rf_rate = 0.04 # 4% Risk-Free Rate
             sharpe = (ann_return - rf_rate) / ann_vol if ann_vol > 0 else -1.0
-            
-            # Skip unreliable or zero-yield stocks immediately
+
+            # Skip unreliable or negative Sharpe ratios immediately
             if sharpe <= 0: return None
 
             # 2. Fundamental Dividend Data
             info = t.info
             active_rate = info.get('dividendRate') or info.get('trailingAnnualDividendRate') or 0
             div_yield_pct = (active_rate / price) * 100
-            
+
             if div_yield_pct > 25 or div_yield_pct < 1.0: # Filter yields < 1%
                 return None
 
@@ -142,8 +143,8 @@ class NyseTrendingReport:
             if file_age < self.cache_ttl:
                 try:
                     df_all = pd.read_csv(self.data_cache_path)
-                    self.market_data = df_all[(df_all['Div Yield (%)'] > 1.5) & (df_all['Sharpe Ratio'] > 0)].copy()
-                    logger.info(f"Using cache ({round(file_age/60)}m old)")
+                    self.market_data = df_all[(df_all['Div Yield (%)'] >= 1.0) & (df_all['Sharpe Ratio'] > 0)].copy()
+                    logger.info(f"Using cache ({round(file_age / 60)}m old)")
                     return
                 except Exception: pass
 
@@ -154,7 +155,7 @@ class NyseTrendingReport:
             for future in tqdm(as_completed(future_to_symbol), total=len(symbols), desc="Downloading"):
                 res = future.result()
                 if res: results.append(res)
-        
+
         if results:
             df_all = pd.DataFrame(results)
             df_all.to_csv(self.data_cache_path, index=False)
@@ -168,11 +169,20 @@ class NyseTrendingReport:
             logger.error("No market data available.")
 
     def filter_and_rank(self, top_n=100):
-        """Ranks by Sharpe Ratio first (Reliability), then Yield."""
+        """
+        Ranks stocks using a Blended Score (Sharpe Ratio * Dividend Yield).
+        Ensures a balance of price stability and strong dividend payouts.
+        """
         if self.market_data.empty: return
+
+        # Calculate Blended Score
+        self.market_data['Blended Score'] = self.market_data['Sharpe Ratio'] * self.market_data['Div Yield (%)']
+        self.market_data['Blended Score'] = self.market_data['Blended Score'].round(2)
+
+        # Sort by Blended Score descending
         self.final_report = self.market_data.sort_values(
-            by=['Sharpe Ratio', 'Div Yield (%)'], 
-            ascending=[False, False]
+            by='Blended Score',
+            ascending=False
         ).head(top_n)
 
     def generate_report(self):
@@ -180,16 +190,17 @@ class NyseTrendingReport:
         if self.final_report.empty:
             logger.warning("No matches for report.")
             return
-        
+
         output_html = 'dividend_report.html'
         pd.options.display.float_format = "{:,.2f}".format
-        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sharpe Ratio', 'Sector', '52W High', 'P/E Ratio']
+        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sharpe Ratio', 'Blended Score', 'Sector',
+                '52W High', 'P/E Ratio']
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        
+
         html_content = f"""
         <html>
         <head>
-            <title>S&P Reliable Dividend Report</title>
+            <title>S&P Blended Dividend Report</title>
             <style>
                 body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 30px; color: #333; background-color: #f4f7f6; }}
                 .container {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
@@ -204,17 +215,17 @@ class NyseTrendingReport:
         </head>
         <body>
             <div class="container">
-                <h2>S&P Reliable Dividend Report — {date.today()}</h2>
-                <p>Filter Criteria: <strong>Sharpe Ratio > 0</strong> (Risk-Adjusted Return) and <strong>Forward Yield > 1%</strong>.</p>
+                <h2>S&P Balanced Yield Report — {date.today()}</h2>
+                <p>Filter Criteria: Ranked by <strong>Blended Score</strong> (Sharpe Ratio &times; Dividend Yield) with baseline <strong>Yield &gt; 1%</strong>.</p>
                 {self.final_report[cols].to_html(index=False, border=0)}
                 <div class="footer">Data sourced via yfinance for S&P 500/400/600. Generated at {current_time}.</div>
             </div>
         </body>
         </html>
         """
-        
+
         with open(output_html, 'w', encoding='utf-8') as f: f.write(html_content)
-        
+
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch()
