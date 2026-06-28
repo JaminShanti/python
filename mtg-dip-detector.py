@@ -220,12 +220,12 @@ class MTGDipDetector:
                 if p['high'] > g_med * 3.0: p['high'] = g_med
 
             stable_p = [p for p in proc if p['stable']]
-            if stable_p:
-                s_med = np.median([p['high'] for p in stable_p])
-                s_filt = [p for p in stable_p if p['high'] <= s_med * 2.0]
-                st_ref = min(s_filt if s_filt else stable_p, key=lambda x: x['high'])
-            else:
-                st_ref = min(proc, key=lambda x: x['curr'])
+            if not stable_p:
+                continue
+
+            s_med = np.median([p['high'] for p in stable_p])
+            s_filt = [p for p in stable_p if p['high'] <= s_med * 2.0]
+            st_ref = min(s_filt if s_filt else stable_p, key=lambda x: x['high'])
 
             for p in proc:
                 if not p['fresh']: continue
