@@ -17,7 +17,7 @@ class MTGDeckScanner:
         self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
         self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
 
-        # Categorization Rules
+        # Categorization Rules - Land is first, so MDFCs like "Instant // Land" get counted as Lands
         self.type_order = ["Commander", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker",
                            "Land"]
         self.type_hierarchy = ("Land", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker")
@@ -190,15 +190,7 @@ class MTGDeckScanner:
         if not type_line:
             return "Creature"
 
-        # Handle double-faced cards (MDFCs / Transform cards)
-        if "//" in type_line:
-            front, back = type_line.split("//", 1)
-            # If the front face has a valid non-land type (e.g., Instant, Sorcery, Enchantment), categorize it by that.
-            front_match = next((t for t in self.type_hierarchy if t.lower() in front.lower() and t != "Land"), None)
-            if front_match:
-                return front_match
-
-        # Standard fallback for single-faced cards, artifact lands, etc.
+        # Prioritizes Land (including MDFCs), then falls down the hierarchy
         return next((t for t in self.type_hierarchy if t.lower() in type_line.lower()), "Artifact")
 
     def analyze_commander(self, page, commander_url):
