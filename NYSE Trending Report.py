@@ -1,249 +1,433 @@
-import os, io, re, time, logging, requests, yfinance as yf, pandas as pd, numpy as np
-from datetime import datetime, date, timedelta
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time, re, os, pickle, requests
+from urllib.parse import unquote, quote
+from collections import Counter
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-import random
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
-class NyseTrendingReport:
-    """
-    Stabilized Dividend Report with Sharpe Ratio and Stale-if-Error Caching.
-    Filters the S&P 500, 400, and 600 for reliable, high-yielding opportunities
-    using a Blended Score (Sharpe Ratio * Dividend Yield).
-    """
-    def __init__(self, cache_path='market_symbols.csv', data_cache_path='market_data_cache.csv'):
-        self.cache_path = os.path.abspath(cache_path)
-        self.data_cache_path = os.path.abspath(data_cache_path)
-        self.cache_ttl = 4 * 3600
-        self.symbol_ttl = 7 * 24 * 3600
-        self.market_data = pd.DataFrame()
-        self.final_report = pd.DataFrame()
-        self.symbol_index_map = {}
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-        })
+class MTGDeckScanner:
+    def __init__(self, cache_dir="mtg_scanner_cache", min_percentage=0.20):
+        # Configuration
+        self.cache_dir = cache_dir
+        self.min_percentage = min_percentage
+        os.makedirs(self.cache_dir, exist_ok=True)
 
-    def _get_wikipedia_table(self, url):
-        """Robustly parse Wikipedia tables to find stock symbols."""
+        # File Paths
+        self.urls_cache_file = os.path.join(self.cache_dir, "topdeck_urls_cache.pkl")
+        self.scryfall_cache_file = os.path.join(self.cache_dir, "scryfall_data.pkl")
+        self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
+        self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
+
+        # Categorization Rules
+        self.type_order = ["Commander", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker",
+                           "Land"]
+        self.type_hierarchy = ("Land", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker")
+
+        # Noise filters to clean data
+        self.ui_noise = [
+            "Mountain", "Forest", "Plains", "Island", "Swamp",
+            "Snow-Covered Mountain", "Snow-Covered Forest", "Snow-Covered Plains",
+            "Snow-Covered Island", "Snow-Covered Swamp", "Artifact", "Creature",
+            "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"
+        ]
+
+        # Target Decklists
+        self.commander_urls = [
+            "https://edhtop16.com/commander/Marwyn%2C%20the%20Nurturer?timePeriod=ONE_YEAR",
+            "https://edhtop16.com/commander/Magda%2C%20Brazen%20Outlaw?timePeriod=THREE_MONTHS",
+            "https://edhtop16.com/commander/Winota%2C%20Joiner%20of%20Forces?timePeriod=THREE_MONTHS",
+            "https://edhtop16.com/commander/Rocco%2C%20Cabaretti%20Caterer?timePeriod=THREE_MONTHS",
+            "https://edhtop16.com/commander/Azami%2C%20Lady%20of%20Scrolls?timePeriod=SIX_MONTHS",
+        ]
+
+        # Load Exclusions and Caches
+        self.excluded_cards = self._load_exclusions()
+        self.topdeck_cache = self._load_cache(self.urls_cache_file)
+        self.deck_cache = self._load_cache(self.deck_cache_file)
+        self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
+
+    def _load_exclusions(self):
+        """Loads user-defined card exclusions and replacements from a text file."""
+        exclusions = {}
+        if os.path.exists(self.excluded_file):
+            with open(self.excluded_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Check for replacement syntax (e.g., "City of Traitors -> Crystal Vein")
+                    if '->' in line:
+                        target, replacement = line.split('->', 1)
+                        exclusions[target.strip().lower()] = replacement.strip()
+                    else:
+                        # Pure exclusion with no replacement
+                        exclusions[line.lower()] = None
+            return exclusions
+        print(f"Warning: {self.excluded_file} not found. No cards will be excluded.")
+        return exclusions
+
+    def _load_cache(self, filepath):
+        """Helper to load a pickle cache."""
+        if os.path.exists(filepath):
+            with open(filepath, 'rb') as f:
+                return pickle.load(f)
+        return {}
+
+    def _save_cache(self, cache_dict, filepath):
+        """Helper to save a pickle cache."""
+        with open(filepath, 'wb') as f:
+            pickle.dump(cache_dict, f)
+
+    def auto_scroll_to_bottom(self, page):
+        """Scrolls to the bottom until the page height stops changing, loading all lists."""
+        last_height = page.evaluate("document.body.scrollHeight")
+        while True:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2000)  # Wait for lazy-loaded content
+            new_height = page.evaluate("document.body.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+    def get_topdeck_urls(self, page, commander_url, force_refresh=False):
+        """Fetches and caches individual decklist URLs from a commander page."""
+        if commander_url in self.topdeck_cache and not force_refresh:
+            return self.topdeck_cache[commander_url]
+
+        page.goto(commander_url, wait_until="networkidle")
+        self.auto_scroll_to_bottom(page)
+
+        html_content = page.content()
+        td_regex = re.compile(r"topdeck\.gg/deck/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+")
+        matches = td_regex.findall(html_content)
+        urls = list(set([f"https://{match}" for match in matches]))
+
+        self.topdeck_cache[commander_url] = urls
+        self._save_cache(self.topdeck_cache, self.urls_cache_file)
+        return urls
+
+    def scrape_deck_data(self, page, url):
+        """Scrapes and caches the card list and basic lands from a single decklist."""
+        if url in self.deck_cache:
+            return self.deck_cache[url]
+
         try:
-            resp = self.session.get(url, timeout=20)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            all_symbols = []
-            for table in soup.find_all('table', class_='wikitable'):
-                header_row = table.find('tr')
-                if not header_row: continue
-                headers = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
-                ticker_idx = -1
-                for i, h in enumerate(headers):
-                    if any(x == h or x in h for x in ['Symbol', 'Ticker', 'Ticker symbol', 'Ticker Symbol']):
-                        ticker_idx = i
-                        break
-                if ticker_idx != -1:
-                    for row in table.find_all('tr')[1:]:
-                        cols = row.find_all('td')
-                        if len(cols) > ticker_idx:
-                            text = cols[ticker_idx].get_text(strip=True)
-                            parts = text.split()
-                            if parts:
-                                symbol = parts[0].upper()
-                                symbol = re.sub(r'[\.\/]', '-', symbol)
-                                if 0 < len(symbol) < 7:
-                                    all_symbols.append(symbol)
-            return sorted(list(set(all_symbols)))
+            page.goto(url, wait_until="networkidle")
+            page.wait_for_timeout(1500)
+
+            data = page.evaluate('''() => {
+                let found = new Set();
+                let basicCounts = { mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0 };
+                const cleanName = (name) => name.replace(/^\\s*\\d+x?\\s+/i, '').trim();
+
+                document.querySelectorAll('img[alt]').forEach(img => {
+                    let name = img.getAttribute('alt');
+                    if (!name || name.length < 2) return;
+
+                    let lowerName = name.toLowerCase();
+                    let basicTypes = ["mountain", "forest", "plains", "island", "swamp", 
+                                      "snow-covered mountain", "snow-covered forest", 
+                                      "snow-covered plains", "snow-covered island", "snow-covered swamp"];
+
+                    if (basicTypes.includes(lowerName)) {
+                        let text = img.parentElement.innerText || "";
+                        let match = text.match(/(\\d+)/);
+                        let count = match ? parseInt(match[1]) : 1;
+
+                        if (lowerName.includes("mountain")) basicCounts.mountain += count;
+                        else if (lowerName.includes("forest")) basicCounts.forest += count;
+                        else if (lowerName.includes("plains")) basicCounts.plains += count;
+                        else if (lowerName.includes("island")) basicCounts.island += count;
+                        else if (lowerName.includes("swamp")) basicCounts.swamp += count;
+                    } else {
+                        found.add(cleanName(name));
+                    }
+                });
+                return { cards: Array.from(found), basicCounts };
+            }''')
+
+            bad = ["topdeck", "logo", "avatar", "profile", "banner", "discord", "twitter",
+                   "match history", "standings", "deck", "event", "buy", "card image"]
+
+            clean_cards = [n for n in data['cards'] if not any(b in n.lower() for b in bad) and not re.match(r'^\d', n)]
+
+            result = (clean_cards, data['basicCounts'])
+            self.deck_cache[url] = result
+            self._save_cache(self.deck_cache, self.deck_cache_file)
+
+            return result
+
         except Exception as e:
-            logger.error(f"Error scraping {url}: {e}")
-            return []
+            print(f"Error reading {url}: {e}")
+            return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
 
-    def get_all_symbols_with_indices(self):
-        """Loads or scrapes S&P 500/400/600 symbols from Wikipedia."""
-        if os.path.exists(self.cache_path):
-            file_age = time.time() - os.path.getmtime(self.cache_path)
-            if file_age < self.symbol_ttl:
-                try:
-                    cache_df = pd.read_csv(self.cache_path)
-                    if not cache_df.empty and 'symbol' in cache_df.columns:
-                        self.symbol_index_map = dict(zip(cache_df['symbol'], cache_df['index']))
-                        return cache_df['symbol'].tolist()
-                except Exception: pass
+    def get_scryfall_data(self, card_name):
+        """Fetches clean layout data and exact type rules from Scryfall."""
+        if card_name in self.scryfall_cache:
+            return self.scryfall_cache[card_name]
 
-        logger.info("Scraping fresh symbols from Wikipedia...")
-        indices = {
-            'S&P 500': 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
-            'S&P 400': 'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies',
-            'S&P 600': 'https://en.wikipedia.org/wiki/List_of_S%26P_600_companies'
-        }
-        all_data = []
-        for name, url in indices.items():
-            symbols = self._get_wikipedia_table(url)
-            logger.info(f"Found {len(symbols)} symbols for {name}")
-            for s in symbols: all_data.append({'symbol': s, 'index': name})
-
-        if not all_data: return []
-        df = pd.DataFrame(all_data).drop_duplicates('symbol')
-        df.to_csv(self.cache_path, index=False)
-        self.symbol_index_map = dict(zip(df['symbol'], df['index']))
-        return df['symbol'].tolist()
-
-    def fetch_single_ticker(self, symbol):
-        """Fetches and calculates metrics for a single stock."""
+        time.sleep(0.1)  # Polite rate limiting rule for Scryfall API
+        url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
         try:
-            time.sleep(random.uniform(0.1, 0.4)) # Polite jitter
-            t = yf.Ticker(symbol)
+            response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
+            if response.status_code == 200:
+                res_data = response.json()
+                type_line = res_data.get("type_line", "")
+                if "card_faces" in res_data and not type_line:
+                    type_line = res_data["card_faces"][0].get("type_line", "")
+                result = (res_data.get("name", card_name), type_line)
 
-            # 1. Price History for Sharpe Ratio
-            hist = t.history(period="1y")
-            if hist.empty or len(hist) < 50:
-                return None
-
-            price = hist['Close'].iloc[-1]
-            returns = hist['Close'].pct_change().dropna()
-            ann_return = returns.mean() * 252
-            ann_vol = returns.std() * np.sqrt(252)
-            rf_rate = 0.04 # 4% Risk-Free Rate
-            sharpe = (ann_return - rf_rate) / ann_vol if ann_vol > 0 else -1.0
-
-            # Skip unreliable or negative Sharpe ratios immediately
-            if sharpe <= 0: return None
-
-            # 2. Fundamental Dividend Data
-            info = t.info
-            active_rate = info.get('dividendRate') or info.get('trailingAnnualDividendRate') or 0
-            div_yield_pct = (active_rate / price) * 100
-
-            if div_yield_pct > 25 or div_yield_pct < 1.0: # Filter yields < 1%
-                return None
-
-            return {
-                'Symbol': symbol,
-                'Name': info.get('longName', info.get('shortName', 'N/A')),
-                'Price': price,
-                'Div Yield (%)': round(float(div_yield_pct), 2),
-                'Sharpe Ratio': round(float(sharpe), 2),
-                '52W High': info.get('fiftyTwoWeekHigh', 0),
-                'P/E Ratio': info.get('trailingPE', 'N/A'),
-                'Index': self.symbol_index_map.get(symbol, 'N/A'),
-                'Sector': info.get('sector', 'N/A')
-            }
+                self.scryfall_cache[card_name] = result
+                self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
+                return result
         except Exception:
-            return None
+            pass
 
-    def collect_market_data(self, symbols):
-        """Orchestrates data collection with 4-hour caching."""
-        cache_exists = os.path.exists(self.data_cache_path)
-        if cache_exists:
-            file_age = time.time() - os.path.getmtime(self.data_cache_path)
-            if file_age < self.cache_ttl:
-                try:
-                    df_all = pd.read_csv(self.data_cache_path)
-                    self.market_data = df_all[(df_all['Div Yield (%)'] >= 1.0) & (df_all['Sharpe Ratio'] > 0)].copy()
-                    logger.info(f"Using cache ({round(file_age / 60)}m old)")
-                    return
-                except Exception: pass
+        result = (card_name, "")
+        self.scryfall_cache[card_name] = result
+        self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
+        return result
 
-        logger.info(f"Analyzing {len(symbols)} symbols via yfinance...")
-        results = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_symbol = {executor.submit(self.fetch_single_ticker, s): s for s in symbols}
-            for future in tqdm(as_completed(future_to_symbol), total=len(symbols), desc="Downloading"):
-                res = future.result()
-                if res: results.append(res)
+    def categorize_card(self, type_line):
+        """Sorts card types based on the predefined hierarchy."""
+        if not type_line:
+            return "Creature"
+        return next((t for t in self.type_hierarchy if t.lower() in type_line.lower()), "Artifact")
 
-        if results:
-            df_all = pd.DataFrame(results)
-            df_all.to_csv(self.data_cache_path, index=False)
-            self.market_data = df_all.copy()
-            logger.info(f"Found {len(self.market_data)} reliable dividend stocks.")
-        elif cache_exists:
-            logger.warning("Fetch failed. Falling back to stale cache.")
-            df_all = pd.read_csv(self.data_cache_path)
-            self.market_data = df_all.copy()
-        else:
-            logger.error("No market data available.")
+    def analyze_commander(self, page, commander_url):
+        """Main operational logic for a single commander."""
+        name_match = re.search(r"commander/([^?]+)", commander_url)
+        commander_name = unquote(name_match.group(1)) if name_match else "Unknown Commander"
 
-    def filter_and_rank(self, top_n=100):
-        """
-        Ranks stocks using a Blended Score (Sharpe Ratio * Dividend Yield).
-        Ensures a balance of price stability and strong dividend payouts.
-        """
-        if self.market_data.empty: return
+        print(f"\n{'=' * 60}")
+        print(f"Gathering Consensus Data for: {commander_name}")
+        print(f"{'=' * 60}")
 
-        # Calculate Blended Score
-        self.market_data['Blended Score'] = self.market_data['Sharpe Ratio'] * self.market_data['Div Yield (%)']
-        self.market_data['Blended Score'] = self.market_data['Blended Score'].round(2)
-
-        # Sort by Blended Score descending
-        self.final_report = self.market_data.sort_values(
-            by='Blended Score',
-            ascending=False
-        ).head(top_n)
-
-    def generate_report(self):
-        """Generates HTML and PDF reports."""
-        if self.final_report.empty:
-            logger.warning("No matches for report.")
+        urls = self.get_topdeck_urls(page, commander_url)
+        if not urls:
+            print("No lists found!")
             return
 
-        output_html = 'dividend_report.html'
-        pd.options.display.float_format = "{:,.2f}".format
-        cols = ['Symbol', 'Name', 'Index', 'Price', 'Div Yield (%)', 'Sharpe Ratio', 'Blended Score', 'Sector',
-                '52W High', 'P/E Ratio']
-        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        print(f"Scraping {len(urls)} tournament decklists...")
 
-        html_content = f"""
-        <html>
-        <head>
-            <title>S&P Blended Dividend Report</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 30px; color: #333; background-color: #f4f7f6; }}
-                .container {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-                h2 {{ color: #2c3e50; margin-top: 0; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
-                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; font-size: 14px; }}
-                th, td {{ padding: 12px 15px; border-bottom: 1px solid #ddd; text-align: left; }}
-                th {{ background: #34495e; color: white; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                tr:hover {{ background-color: #f1f1f1; transition: 0.3s; }}
-                .footer {{ margin-top: 20px; font-size: 12px; color: #7f8c8d; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h2>S&P Balanced Yield Report — {date.today()}</h2>
-                <p>Filter Criteria: Ranked by <strong>Blended Score</strong> (Sharpe Ratio &times; Dividend Yield) with baseline <strong>Yield &gt; 1%</strong>.</p>
-                {self.final_report[cols].to_html(index=False, border=0)}
-                <div class="footer">Data sourced via yfinance for S&P 500/400/600. Generated at {current_time}.</div>
-            </div>
-        </body>
-        </html>
-        """
+        raw_card_counter = Counter()  # Untouched by exclusions for math calculation
+        card_counter = Counter()  # Adjusted for exclusions/replacements
+        total_basics = {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
 
-        with open(output_html, 'w', encoding='utf-8') as f: f.write(html_content)
+        valid_deck_count = 0  # Only count decks that successfully load data
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page()
-                page.set_content(html_content)
-                pdf_path = f"dividend_report_{current_time}.pdf"
-                page.pdf(path=pdf_path, format='A4', landscape=True, print_background=True)
-                browser.close()
-            logger.info(f"PDF Report saved: {pdf_path}")
-        except Exception as e:
-            logger.error(f"PDF error: {e}")
+        for i, url in enumerate(urls, 1):
+            print(f"Processing decklist {i}/{len(urls)}...", end="\r")
+            cards, b_counts = self.scrape_deck_data(page, url)
+
+            # --- BUG FIX: Skip empty/failed decklists so they don't skew the math ---
+            if not cards and sum(b_counts.values()) == 0:
+                continue
+
+            valid_deck_count += 1
+
+            # Record RAW cards for accurate meta averages
+            raw_card_counter.update(cards)
+
+            # --- PROCESS EXCLUSIONS AND REPLACEMENTS ---
+            processed_cards = set()
+            for c in cards:
+                c_lower = c.lower()
+                if c_lower in self.excluded_cards:
+                    replacement = self.excluded_cards[c_lower]
+                    if replacement:
+                        processed_cards.add(replacement)
+                    # If replacement is None, the card is excluded entirely
+                else:
+                    processed_cards.add(c)
+
+            card_counter.update(processed_cards)
+
+            for k in total_basics:
+                total_basics[k] += b_counts.get(k, 0)
+
+        # Protection in case all URLs fail
+        if valid_deck_count == 0:
+            print(f"\nNo valid decklists could be processed for {commander_name}.")
+            return
+
+        # --- Calculate True Average Category Counts (Using RAW DATA & Valid Deck Count) ---
+        total_lands_all_decks = sum(total_basics.values())
+        total_instants_all_decks = 0
+
+        # We pull from raw_card_counter here so your excluded_cards.txt doesn't artificially lower the meta average
+        raw_unique_cards = [card for card in raw_card_counter.keys() if card not in self.ui_noise
+                            and card.lower() != commander_name.lower()]
+
+        print(f"\nAnalyzing {len(raw_unique_cards)} unique cards to calculate true category averages...")
+        for idx, card in enumerate(raw_unique_cards, 1):
+            print(f"Checking Scryfall typelines {idx}/{len(raw_unique_cards)}...", end="\r")
+            _, type_line = self.get_scryfall_data(card)
+            cat = self.categorize_card(type_line)
+            if cat == "Land":
+                total_lands_all_decks += raw_card_counter[card]
+            elif cat == "Instant":
+                total_instants_all_decks += raw_card_counter[card]
+
+        print(" " * 80, end="\r")  # Clear the loading line
+
+        # Dividing by the successful deck count instead of the raw URL list length
+        dynamic_min_lands = round(total_lands_all_decks / valid_deck_count)
+        dynamic_min_instants = round(total_instants_all_decks / valid_deck_count)
+        print(f"Targeting dynamic averages: {dynamic_min_lands} Lands | {dynamic_min_instants} Instants")
+
+        # Calculate average basic lands
+        avg_basics = {}
+        total_avg_basics = 0
+        for land, total in total_basics.items():
+            avg = round(total / valid_deck_count)
+            if avg > 0:
+                avg_basics[land.capitalize()] = avg
+                total_avg_basics += avg
+
+        valid_cards = []
+        for card, count in card_counter.most_common():
+            if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
+                continue
+            if (count / valid_deck_count) >= self.min_percentage:
+                valid_cards.append(card)
+
+        max_non_basics = 99 - total_avg_basics
+        high_consensus_pool = valid_cards[:max_non_basics]
+
+        deck_list = {t: [] for t in self.type_order}
+        deck_list["Commander"] = [f"1 {commander_name}"]
+
+        current_count = 1
+        for idx, card in enumerate(high_consensus_pool, 1):
+            real_name, type_line = self.get_scryfall_data(card)
+            category = self.categorize_card(type_line)
+            deck_list[category].append(f"1 {real_name}")
+            current_count += 1
+
+        # --- SAFETY NET: Enforce Dynamic Minimum Instant Count ---
+        current_instants = len(deck_list["Instant"])
+        if current_instants < dynamic_min_instants:
+            instant_deficit = dynamic_min_instants - current_instants
+
+            next_best_instants = []
+            for card, count in card_counter.most_common():
+                if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
+                    continue
+                if card not in high_consensus_pool:
+                    _, type_line = self.get_scryfall_data(card)
+                    if self.categorize_card(type_line) == "Instant":
+                        next_best_instants.append(card)
+                        if len(next_best_instants) == instant_deficit:
+                            break
+
+            instants_to_add = len(next_best_instants)
+            cards_removed = 0
+            for card in reversed(high_consensus_pool):
+                if cards_removed >= instants_to_add:
+                    break
+
+                for category in self.type_order:
+                    if category in ["Land", "Commander", "Instant"]:
+                        continue
+
+                    matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                    if matched_item:
+                        deck_list[category].remove(matched_item)
+                        current_count -= 1
+                        cards_removed += 1
+                        print(f"   -> Cut '{card}' to make room for required average Instants.")
+                        break
+
+            for card in next_best_instants:
+                real_name, type_line = self.get_scryfall_data(card)
+                deck_list["Instant"].append(f"1 {real_name}")
+                current_count += 1
+                print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
+
+        # --- SAFETY NET: Enforce Dynamic Minimum Land Count ---
+        current_lands = len(deck_list["Land"])
+        slots_remaining = 100 - current_count
+
+        if (current_lands + slots_remaining) < dynamic_min_lands:
+            deficit = dynamic_min_lands - (current_lands + slots_remaining)
+
+            cards_removed = 0
+            for card in reversed(high_consensus_pool):
+                if cards_removed >= deficit:
+                    break
+
+                for category in self.type_order:
+                    if category in ["Land", "Commander", "Instant"]:
+                        continue
+
+                    matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                    if matched_item:
+                        deck_list[category].remove(matched_item)
+                        current_count -= 1
+                        slots_remaining += 1
+                        cards_removed += 1
+                        print(f"   -> Cut '{card}' to make room for required average Lands.")
+                        break
+
+        # --- INJECT BASIC LANDS ---
+        # Identify which basic lands are actually played in this meta, sorted by popularity
+        basic_types_to_use = [k.capitalize() for k, v in sorted(total_basics.items(), key=lambda x: x[1], reverse=True)
+                              if v > 0]
+
+        # Fallback if the meta is 100% non-basic
+        if not basic_types_to_use:
+            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains"]
+
+        # 1. Give each basic type its guaranteed meta average first
+        for basic_name in basic_types_to_use:
+            if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
+                allocated = min(avg_basics[basic_name], slots_remaining)
+                deck_list["Land"].append(f"{allocated} {basic_name}")
+                slots_remaining -= allocated
+
+        # 2. Round-robin any leftover slots to ensure proper color fixing
+        if slots_remaining > 0:
+            distribution = {b: 0 for b in basic_types_to_use}
+            idx = 0
+            while slots_remaining > 0:
+                distribution[basic_types_to_use[idx % len(basic_types_to_use)]] += 1
+                slots_remaining -= 1
+                idx += 1
+
+            for basic_name, count in distribution.items():
+                if count > 0:
+                    found = False
+                    for i, entry in enumerate(deck_list["Land"]):
+                        if entry.endswith(f" {basic_name}"):
+                            old_count = int(entry.split(' ', 1)[0])
+                            deck_list["Land"][i] = f"{old_count + count} {basic_name}"
+                            found = True
+                            break
+                    if not found:
+                        deck_list["Land"].append(f"{count} {basic_name}")
+
+        # Final Output Rendering
+        print(f"\n\n### {commander_name} - Meta Optimized Decklist")
+        for category in self.type_order:
+            cards_in_cat = deck_list[category]
+            if cards_in_cat:
+                cat_total = sum([int(c.split(' ', 1)[0]) for c in cards_in_cat])
+                print(f"\n### {category} ({cat_total})")
+                for card_entry in sorted(cards_in_cat, key=lambda x: x.split(' ', 1)[1]):
+                    print(card_entry)
 
     def run(self):
-        symbols = self.get_all_symbols_with_indices()
-        if symbols:
-            self.collect_market_data(symbols)
-            self.filter_and_rank()
-            self.generate_report()
+        """Entry point to launch the browser and process all target URLs."""
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            for url in self.commander_urls:
+                self.analyze_commander(page, url)
+
+            browser.close()
+
 
 if __name__ == "__main__":
-    NyseTrendingReport().run()
+    scanner = MTGDeckScanner()
+    scanner.run()

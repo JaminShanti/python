@@ -54,12 +54,10 @@ class MTGDeckScanner:
                     line = line.strip()
                     if not line:
                         continue
-                    # Check for replacement syntax (e.g., "City of Traitors -> Crystal Vein")
                     if '->' in line:
                         target, replacement = line.split('->', 1)
                         exclusions[target.strip().lower()] = replacement.strip()
                     else:
-                        # Pure exclusion with no replacement
                         exclusions[line.lower()] = None
             return exclusions
         print(f"Warning: {self.excluded_file} not found. No cards will be excluded.")
@@ -191,6 +189,16 @@ class MTGDeckScanner:
         """Sorts card types based on the predefined hierarchy."""
         if not type_line:
             return "Creature"
+
+        # Handle double-faced cards (MDFCs / Transform cards)
+        if "//" in type_line:
+            front, back = type_line.split("//", 1)
+            # If the front face has a valid non-land type (e.g., Instant, Sorcery, Enchantment), categorize it by that.
+            front_match = next((t for t in self.type_hierarchy if t.lower() in front.lower() and t != "Land"), None)
+            if front_match:
+                return front_match
+
+        # Standard fallback for single-faced cards, artifact lands, etc.
         return next((t for t in self.type_hierarchy if t.lower() in type_line.lower()), "Artifact")
 
     def analyze_commander(self, page, commander_url):
@@ -209,14 +217,22 @@ class MTGDeckScanner:
 
         print(f"Scraping {len(urls)} tournament decklists...")
 
+        raw_card_counter = Counter()
         card_counter = Counter()
         total_basics = {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
+
+        valid_deck_count = 0
 
         for i, url in enumerate(urls, 1):
             print(f"Processing decklist {i}/{len(urls)}...", end="\r")
             cards, b_counts = self.scrape_deck_data(page, url)
 
-            # --- PROCESS EXCLUSIONS AND REPLACEMENTS ---
+            if not cards and sum(b_counts.values()) == 0:
+                continue
+
+            valid_deck_count += 1
+            raw_card_counter.update(cards)
+
             processed_cards = set()
             for c in cards:
                 c_lower = c.lower()
@@ -224,7 +240,6 @@ class MTGDeckScanner:
                     replacement = self.excluded_cards[c_lower]
                     if replacement:
                         processed_cards.add(replacement)
-                    # If replacement is None, the card is excluded entirely
                 else:
                     processed_cards.add(c)
 
@@ -233,34 +248,36 @@ class MTGDeckScanner:
             for k in total_basics:
                 total_basics[k] += b_counts.get(k, 0)
 
-        # --- Calculate True Average Category Counts ---
+        if valid_deck_count == 0:
+            print(f"\nNo valid decklists could be processed for {commander_name}.")
+            return
+
         total_lands_all_decks = sum(total_basics.values())
         total_instants_all_decks = 0
 
-        unique_cards = [card for card in card_counter.keys() if card not in self.ui_noise
-                        and card.lower() not in self.excluded_cards and card.lower() != commander_name.lower()]
+        raw_unique_cards = [card for card in raw_card_counter.keys() if card not in self.ui_noise
+                            and card.lower() != commander_name.lower()]
 
-        print(f"\nAnalyzing {len(unique_cards)} unique cards to calculate true category averages...")
-        for idx, card in enumerate(unique_cards, 1):
-            print(f"Checking Scryfall typelines {idx}/{len(unique_cards)}...", end="\r")
+        print(f"\nAnalyzing {len(raw_unique_cards)} unique cards to calculate true category averages...")
+        for idx, card in enumerate(raw_unique_cards, 1):
+            print(f"Checking Scryfall typelines {idx}/{len(raw_unique_cards)}...", end="\r")
             _, type_line = self.get_scryfall_data(card)
             cat = self.categorize_card(type_line)
             if cat == "Land":
-                total_lands_all_decks += card_counter[card]
+                total_lands_all_decks += raw_card_counter[card]
             elif cat == "Instant":
-                total_instants_all_decks += card_counter[card]
+                total_instants_all_decks += raw_card_counter[card]
 
-        print(" " * 80, end="\r")  # Clear the loading line
+        print(" " * 80, end="\r")
 
-        dynamic_min_lands = round(total_lands_all_decks / len(urls))
-        dynamic_min_instants = round(total_instants_all_decks / len(urls))
+        dynamic_min_lands = round(total_lands_all_decks / valid_deck_count)
+        dynamic_min_instants = round(total_instants_all_decks / valid_deck_count)
         print(f"Targeting dynamic averages: {dynamic_min_lands} Lands | {dynamic_min_instants} Instants")
 
-        # Calculate average basic lands
         avg_basics = {}
         total_avg_basics = 0
         for land, total in total_basics.items():
-            avg = round(total / len(urls))
+            avg = round(total / valid_deck_count)
             if avg > 0:
                 avg_basics[land.capitalize()] = avg
                 total_avg_basics += avg
@@ -269,7 +286,7 @@ class MTGDeckScanner:
         for card, count in card_counter.most_common():
             if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
                 continue
-            if (count / len(urls)) >= self.min_percentage:
+            if (count / valid_deck_count) >= self.min_percentage:
                 valid_cards.append(card)
 
         max_non_basics = 99 - total_avg_basics
@@ -285,12 +302,10 @@ class MTGDeckScanner:
             deck_list[category].append(f"1 {real_name}")
             current_count += 1
 
-        # --- SAFETY NET: Enforce Dynamic Minimum Instant Count ---
         current_instants = len(deck_list["Instant"])
         if current_instants < dynamic_min_instants:
             instant_deficit = dynamic_min_instants - current_instants
 
-            # Find the next best instants that didn't make the consensus cut
             next_best_instants = []
             for card, count in card_counter.most_common():
                 if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
@@ -302,7 +317,6 @@ class MTGDeckScanner:
                         if len(next_best_instants) == instant_deficit:
                             break
 
-            # Swap out the weakest non-land, non-instant cards to make room
             instants_to_add = len(next_best_instants)
             cards_removed = 0
             for card in reversed(high_consensus_pool):
@@ -321,14 +335,12 @@ class MTGDeckScanner:
                         print(f"   -> Cut '{card}' to make room for required average Instants.")
                         break
 
-            # Add the rescued instants into the deck
             for card in next_best_instants:
                 real_name, type_line = self.get_scryfall_data(card)
                 deck_list["Instant"].append(f"1 {real_name}")
                 current_count += 1
                 print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
 
-        # --- SAFETY NET: Enforce Dynamic Minimum Land Count ---
         current_lands = len(deck_list["Land"])
         slots_remaining = 100 - current_count
 
@@ -341,7 +353,6 @@ class MTGDeckScanner:
                     break
 
                 for category in self.type_order:
-                    # Protect Lands AND curated Instants from being cut
                     if category in ["Land", "Commander", "Instant"]:
                         continue
 
@@ -354,38 +365,38 @@ class MTGDeckScanner:
                         print(f"   -> Cut '{card}' to make room for required average Lands.")
                         break
 
-        # --- INJECT BASIC LANDS ---
-        primary_basic = "Forest"
-        if avg_basics:
-            primary_basic = sorted(avg_basics.items(), key=lambda x: x[1], reverse=True)[0][0]
-        else:
-            most_seen = max(total_basics, key=total_basics.get)
-            if total_basics[most_seen] > 0:
-                primary_basic = most_seen.capitalize()
+        basic_types_to_use = [k.capitalize() for k, v in sorted(total_basics.items(), key=lambda x: x[1], reverse=True)
+                              if v > 0]
+
+        if not basic_types_to_use:
+            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains"]
+
+        for basic_name in basic_types_to_use:
+            if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
+                allocated = min(avg_basics[basic_name], slots_remaining)
+                deck_list["Land"].append(f"{allocated} {basic_name}")
+                slots_remaining -= allocated
 
         if slots_remaining > 0:
-            if avg_basics:
-                sorted_basics = sorted(avg_basics.items(), key=lambda x: x[1], reverse=True)
-                for land_name, count in sorted_basics:
-                    if slots_remaining <= 0:
-                        break
-                    allocated = min(count, slots_remaining)
-                    deck_list["Land"].append(f"{allocated} {land_name}")
-                    slots_remaining -= allocated
+            distribution = {b: 0 for b in basic_types_to_use}
+            idx = 0
+            while slots_remaining > 0:
+                distribution[basic_types_to_use[idx % len(basic_types_to_use)]] += 1
+                slots_remaining -= 1
+                idx += 1
 
-            if slots_remaining > 0:
-                found = False
-                for idx, entry in enumerate(deck_list["Land"]):
-                    if primary_basic in entry:
-                        old_count = int(entry.split(' ', 1)[0])
-                        deck_list["Land"][idx] = f"{old_count + slots_remaining} {primary_basic}"
-                        found = True
-                        break
+            for basic_name, count in distribution.items():
+                if count > 0:
+                    found = False
+                    for i, entry in enumerate(deck_list["Land"]):
+                        if entry.endswith(f" {basic_name}"):
+                            old_count = int(entry.split(' ', 1)[0])
+                            deck_list["Land"][i] = f"{old_count + count} {basic_name}"
+                            found = True
+                            break
+                    if not found:
+                        deck_list["Land"].append(f"{count} {basic_name}")
 
-                if not found:
-                    deck_list["Land"].append(f"{slots_remaining} {primary_basic}")
-
-        # Final Output Rendering
         print(f"\n\n### {commander_name} - Meta Optimized Decklist")
         for category in self.type_order:
             cards_in_cat = deck_list[category]
