@@ -12,21 +12,35 @@ class MTGDeckScanner:
         os.makedirs(self.cache_dir, exist_ok=True)
 
         # File Paths
-        self.urls_cache_file = os.path.join(self.cache_dir, "topdeck_urls_cache.pkl")
-        self.scryfall_cache_file = os.path.join(self.cache_dir, "scryfall_data.pkl")
-        self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
-        self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
+        self.urls_cache_file = os.path.join(
+            self.cache_dir, "topdeck_urls_cache.pkl"
+        )
+        self.scryfall_cache_file = os.path.join(
+            self.cache_dir, "scryfall_data.pkl"
+        )
+        self.deck_cache_file = os.path.join(
+            self.cache_dir, "topdeck_deck_data.pkl"
+        )
+        self.excluded_file = os.path.join(
+            self.cache_dir, "excluded_cards.txt"
+        )
 
-        # Categorization Rules - Land is first, so MDFCs like "Instant // Land" get counted as Lands
-        self.type_order = ["Commander", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker",
-                           "Land"]
-        self.type_hierarchy = ("Land", "Creature", "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker")
+        # Categorization Rules (MDFCs prioritize Lands)
+        self.type_order = [
+            "Commander", "Creature", "Artifact", "Enchantment",
+            "Instant", "Sorcery", "Planeswalker", "Land"
+        ]
+        self.type_hierarchy = (
+            "Land", "Creature", "Artifact", "Enchantment",
+            "Instant", "Sorcery", "Planeswalker"
+        )
 
         # Noise filters to clean data
         self.ui_noise = [
             "Mountain", "Forest", "Plains", "Island", "Swamp",
-            "Snow-Covered Mountain", "Snow-Covered Forest", "Snow-Covered Plains",
-            "Snow-Covered Island", "Snow-Covered Swamp", "Artifact", "Creature",
+            "Snow-Covered Mountain", "Snow-Covered Forest",
+            "Snow-Covered Plains", "Snow-Covered Island",
+            "Snow-Covered Swamp", "Artifact", "Creature",
             "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"
         ]
 
@@ -47,7 +61,7 @@ class MTGDeckScanner:
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
 
     def _load_exclusions(self):
-        """Loads user-defined card exclusions and replacements from a text file."""
+        """Loads user-defined card exclusions and replacements."""
         exclusions = {}
         if os.path.exists(self.excluded_file):
             with open(self.excluded_file, 'r') as f:
@@ -61,7 +75,7 @@ class MTGDeckScanner:
                     else:
                         exclusions[line.lower()] = None
             return exclusions
-        print(f"Warning: {self.excluded_file} not found. No cards will be excluded.")
+        print(f"Warning: {self.excluded_file} not found. No exclusions applied.")
         return exclusions
 
     def _load_cache(self, filepath):
@@ -77,11 +91,11 @@ class MTGDeckScanner:
             pickle.dump(cache_dict, f)
 
     def auto_scroll_to_bottom(self, page):
-        """Scrolls to the bottom until the page height stops changing, loading all lists."""
+        """Scrolls to the bottom until the page stops loading content."""
         last_height = page.evaluate("document.body.scrollHeight")
         while True:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(2000)  # Wait for lazy-loaded content
+            page.wait_for_timeout(2000)
             new_height = page.evaluate("document.body.scrollHeight")
             if new_height == last_height:
                 break
@@ -105,7 +119,7 @@ class MTGDeckScanner:
         return urls
 
     def scrape_deck_data(self, page, url):
-        """Scrapes and caches the card list and basic lands from a single decklist."""
+        """Scrapes and caches the card list and basic lands from a decklist."""
         if url in self.deck_cache:
             return self.deck_cache[url]
 
@@ -115,7 +129,9 @@ class MTGDeckScanner:
 
             data = page.evaluate('''() => {
                 let found = new Set();
-                let basicCounts = { mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0 };
+                let basicCounts = { 
+                    mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0 
+                };
                 const cleanName = (name) => name.replace(/^\\s*\\d+x?\\s+/i, '').trim();
 
                 document.querySelectorAll('img[alt]').forEach(img => {
@@ -123,9 +139,12 @@ class MTGDeckScanner:
                     if (!name || name.length < 2) return;
 
                     let lowerName = name.toLowerCase();
-                    let basicTypes = ["mountain", "forest", "plains", "island", "swamp", 
-                                      "snow-covered mountain", "snow-covered forest", 
-                                      "snow-covered plains", "snow-covered island", "snow-covered swamp"];
+                    let basicTypes = [
+                        "mountain", "forest", "plains", "island", "swamp", 
+                        "snow-covered mountain", "snow-covered forest", 
+                        "snow-covered plains", "snow-covered island", 
+                        "snow-covered swamp"
+                    ];
 
                     if (basicTypes.includes(lowerName)) {
                         let text = img.parentElement.innerText || "";
@@ -144,15 +163,21 @@ class MTGDeckScanner:
                 return { cards: Array.from(found), basicCounts };
             }''')
 
-            bad = ["topdeck", "logo", "avatar", "profile", "banner", "discord", "twitter",
-                   "match history", "standings", "deck", "event", "buy", "card image"]
+            bad = [
+                "topdeck", "logo", "avatar", "profile", "banner", "discord",
+                "twitter", "match history", "standings", "deck", "event",
+                "buy", "card image"
+            ]
 
-            clean_cards = [n for n in data['cards'] if not any(b in n.lower() for b in bad) and not re.match(r'^\d', n)]
+            clean_cards = [
+                n for n in data['cards']
+                if not any(b in n.lower() for b in bad)
+                   and not re.match(r'^\d', n)
+            ]
 
             result = (clean_cards, data['basicCounts'])
             self.deck_cache[url] = result
             self._save_cache(self.deck_cache, self.deck_cache_file)
-
             return result
 
         except Exception as e:
@@ -160,38 +185,36 @@ class MTGDeckScanner:
             return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
 
     def get_scryfall_data(self, card_name):
-        """Fetches clean layout data, exact type rules, and commander legality from Scryfall."""
+        """Fetches clean layout data and commander legality from Scryfall."""
         if card_name in self.scryfall_cache:
             return self.scryfall_cache[card_name]
 
-        time.sleep(0.1)  # Polite rate limiting rule for Scryfall API
+        time.sleep(0.1)  # Polite API rate limit
         url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
         try:
-            response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
+            response = requests.get(
+                url, headers={"User-Agent": "EDH-Builder-Script/1.0"}
+            )
             if response.status_code == 200:
                 res_data = response.json()
                 type_line = res_data.get("type_line", "")
                 if "card_faces" in res_data and not type_line:
                     type_line = res_data["card_faces"][0].get("type_line", "")
 
-                # --- COMMANDER LEGALITY CHECK ---
                 legalities = res_data.get("legalities", {})
                 is_legal = legalities.get("commander") == "legal"
 
-                # --- SIDE-DECK FILTER ---
-                # Stickers and Attractions are legal in Commander, but belong in a side deck, not the 99.
+                # Side-deck elements filter
                 if "Sticker" in type_line or "Attraction" in type_line:
                     is_legal = False
 
                 result = (res_data.get("name", card_name), type_line, is_legal)
-
                 self.scryfall_cache[card_name] = result
                 self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
                 return result
         except Exception:
             pass
 
-        # Default to True on API error so we don't accidentally ban valid cards during a network hiccup
         result = (card_name, "", True)
         self.scryfall_cache[card_name] = result
         self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
@@ -201,18 +224,19 @@ class MTGDeckScanner:
         """Sorts card types based on the predefined hierarchy."""
         if not type_line:
             return "Creature"
-
-        # Prioritizes Land (including MDFCs), then falls down the hierarchy
-        return next((t for t in self.type_hierarchy if t.lower() in type_line.lower()), "Artifact")
+        return next(
+            (t for t in self.type_hierarchy if t.lower() in type_line.lower()),
+            "Artifact"
+        )
 
     def analyze_commander(self, page, commander_url):
-        """Main operational logic for a single commander."""
+        """Main operational consensus logic for a single commander."""
         name_match = re.search(r"commander/([^?]+)", commander_url)
-        commander_name = unquote(name_match.group(1)) if name_match else "Unknown Commander"
+        commander_name = (
+            unquote(name_match.group(1)) if name_match else "Unknown Commander"
+        )
 
-        print(f"\n{'=' * 60}")
-        print(f"Gathering Consensus Data for: {commander_name}")
-        print(f"{'=' * 60}")
+        print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}\n{'=' * 60}")
 
         urls = self.get_topdeck_urls(page, commander_url)
         if not urls:
@@ -223,8 +247,9 @@ class MTGDeckScanner:
 
         raw_card_counter = Counter()
         card_counter = Counter()
-        total_basics = {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
-
+        total_basics = {
+            "mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0
+        }
         valid_deck_count = 0
 
         for i, url in enumerate(urls, 1):
@@ -259,16 +284,17 @@ class MTGDeckScanner:
         total_lands_all_decks = sum(total_basics.values())
         total_instants_all_decks = 0
 
-        raw_unique_cards = [card for card in raw_card_counter.keys() if card not in self.ui_noise
-                            and card.lower() != commander_name.lower()]
+        raw_unique_cards = [
+            card for card in raw_card_counter.keys()
+            if card not in self.ui_noise and card.lower() != commander_name.lower()
+        ]
 
-        print(f"\nAnalyzing {len(raw_unique_cards)} unique cards to calculate true category averages...")
+        print(f"\nAnalyzing {len(raw_unique_cards)} unique cards for averages...")
         for idx, card in enumerate(raw_unique_cards, 1):
             print(f"Checking Scryfall typelines {idx}/{len(raw_unique_cards)}...", end="\r")
             scry_data = self.get_scryfall_data(card)
             type_line, is_legal = scry_data[1], scry_data[2]
 
-            # Remove illegal/banned/side-deck cards from the true average mathematics
             if not is_legal:
                 continue
 
@@ -283,7 +309,11 @@ class MTGDeckScanner:
         dynamic_min_lands = round(total_lands_all_decks / valid_deck_count)
         dynamic_min_instants = round(total_instants_all_decks / valid_deck_count)
         dynamic_max_instants = dynamic_min_instants + 2
-        print(f"Targeting: {dynamic_min_lands} Lands | {dynamic_min_instants}-{dynamic_max_instants} Instants")
+
+        print(
+            f"Targeting: {dynamic_min_lands} Lands | "
+            f"{dynamic_min_instants}-{dynamic_max_instants} Instants"
+        )
 
         avg_basics = {}
         total_avg_basics = 0
@@ -295,14 +325,13 @@ class MTGDeckScanner:
 
         valid_cards = []
         for card, count in card_counter.most_common():
-            if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
+            if (card in self.ui_noise
+                    or card.lower() == commander_name.lower()
+                    or card.lower() in self.excluded_cards):
                 continue
             if (count / valid_deck_count) >= self.min_percentage:
                 scry_data = self.get_scryfall_data(card)
-                is_legal = scry_data[2]
-
-                # Filter out illegal/side-deck cards from the consensus pool
-                if is_legal:
+                if scry_data[2]:
                     valid_cards.append(card)
 
         max_non_basics = 99 - total_avg_basics
@@ -319,7 +348,7 @@ class MTGDeckScanner:
             deck_list[category].append(f"1 {real_name}")
             current_count += 1
 
-        # --- MAXIMUM INSTANT CAP ENFORCEMENT ---
+        # --- MAXIMUM INSTANT CAP ---
         current_instants = len(deck_list["Instant"])
         if current_instants > dynamic_max_instants:
             to_cut = current_instants - dynamic_max_instants
@@ -328,13 +357,18 @@ class MTGDeckScanner:
                 if cards_removed >= to_cut:
                     break
 
-                # Check if this specific card is an instant and currently in the deck
-                matched_item = next((item for item in deck_list["Instant"] if item.endswith(f" {card}")), None)
+                matched_item = next(
+                    (item for item in deck_list["Instant"]
+                     if item.endswith(f" {card}")), None
+                )
                 if matched_item:
                     deck_list["Instant"].remove(matched_item)
                     current_count -= 1
                     cards_removed += 1
-                    print(f"   -> Cut '{card}' (Instant) to meet maximum cap of {dynamic_max_instants}.")
+                    print(
+                        f"   -> Cut '{card}' (Instant) to meet "
+                        f"maximum cap of {dynamic_max_instants}."
+                    )
 
         # --- MINIMUM INSTANT SAFETY NET ---
         current_instants = len(deck_list["Instant"])
@@ -343,13 +377,14 @@ class MTGDeckScanner:
 
             next_best_instants = []
             for card, count in card_counter.most_common():
-                if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
+                if (card in self.ui_noise
+                        or card.lower() == commander_name.lower()
+                        or card.lower() in self.excluded_cards):
                     continue
                 if card not in high_consensus_pool:
                     scry_data = self.get_scryfall_data(card)
                     type_line, is_legal = scry_data[1], scry_data[2]
 
-                    # Ensure safety net cards are also legal
                     if is_legal and self.categorize_card(type_line) == "Instant":
                         next_best_instants.append(card)
                         if len(next_best_instants) == instant_deficit:
@@ -365,12 +400,15 @@ class MTGDeckScanner:
                     if category in ["Land", "Commander", "Instant"]:
                         continue
 
-                    matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                    matched_item = next(
+                        (item for item in deck_list[category]
+                         if item.endswith(f" {card}")), None
+                    )
                     if matched_item:
                         deck_list[category].remove(matched_item)
                         current_count -= 1
                         cards_removed += 1
-                        print(f"   -> Cut '{card}' to make room for required average Instants.")
+                        print(f"   -> Cut '{card}' for required average Instants.")
                         break
 
             for card in next_best_instants:
@@ -396,18 +434,23 @@ class MTGDeckScanner:
                     if category in ["Land", "Commander", "Instant"]:
                         continue
 
-                    matched_item = next((item for item in deck_list[category] if item.endswith(f" {card}")), None)
+                    matched_item = next(
+                        (item for item in deck_list[category]
+                         if item.endswith(f" {card}")), None
+                    )
                     if matched_item:
                         deck_list[category].remove(matched_item)
                         current_count -= 1
                         slots_remaining += 1
                         cards_removed += 1
-                        print(f"   -> Cut '{card}' to make room for required average Lands.")
+                        print(f"   -> Cut '{card}' for required average Lands.")
                         break
 
         # --- BASIC LAND INJECTION ---
-        basic_types_to_use = [k.capitalize() for k, v in sorted(total_basics.items(), key=lambda x: x[1], reverse=True)
-                              if v > 0]
+        sorted_basics = sorted(
+            total_basics.items(), key=lambda x: x[1], reverse=True
+        )
+        basic_types_to_use = [k.capitalize() for k, v in sorted_basics if v > 0]
 
         if not basic_types_to_use:
             basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains"]
@@ -442,13 +485,13 @@ class MTGDeckScanner:
         for category in self.type_order:
             cards_in_cat = deck_list[category]
             if cards_in_cat:
-                cat_total = sum([int(c.split(' ', 1)[0]) for c in cards_in_cat])
+                cat_total = sum(int(c.split(' ', 1)[0]) for c in cards_in_cat)
                 print(f"\n### {category} ({cat_total})")
                 for card_entry in sorted(cards_in_cat, key=lambda x: x.split(' ', 1)[1]):
                     print(card_entry)
 
     def run(self):
-        """Entry point to launch the browser and process all target URLs."""
+        """Entry point to launch the browser and process target URLs."""
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
