@@ -1,29 +1,24 @@
-import time, re, os, pickle, requests
+import time, re, os, pickle, requests, yaml
 from urllib.parse import unquote, quote
 from collections import Counter
 from playwright.sync_api import sync_playwright
 
 
 class MTGDeckScanner:
-    def __init__(self, cache_dir="mtg_scanner_cache", min_percentage=0.20):
+    def __init__(self, cache_dir="mtg_scanner_cache", config_filename="mtg_scanner_config.yaml", min_percentage=0.20):
         # Configuration
         self.cache_dir = cache_dir
         self.min_percentage = min_percentage
+
+        # Ensure the directory exists before we try to look for or save anything in it
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        # File Paths
-        self.urls_cache_file = os.path.join(
-            self.cache_dir, "topdeck_urls_cache.pkl"
-        )
-        self.scryfall_cache_file = os.path.join(
-            self.cache_dir, "scryfall_data.pkl"
-        )
-        self.deck_cache_file = os.path.join(
-            self.cache_dir, "topdeck_deck_data.pkl"
-        )
-        self.excluded_file = os.path.join(
-            self.cache_dir, "excluded_cards.txt"
-        )
+        # File Paths (All neatly tucked into the cache_dir)
+        self.config_file = os.path.join(self.cache_dir, config_filename)
+        self.urls_cache_file = os.path.join(self.cache_dir, "topdeck_urls_cache.pkl")
+        self.scryfall_cache_file = os.path.join(self.cache_dir, "scryfall_data.pkl")
+        self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
+        self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
 
         # Categorization Rules (MDFCs prioritize Lands)
         self.type_order = [
@@ -44,21 +39,28 @@ class MTGDeckScanner:
             "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"
         ]
 
-        # Target Decklists
-        self.commander_urls = [
-            "https://edhtop16.com/commander/Marwyn%2C%20the%20Nurturer?timePeriod=ONE_YEAR",
-            "https://edhtop16.com/commander/Magda%2C%20Brazen%20Outlaw?timePeriod=THREE_MONTHS",
-            "https://edhtop16.com/commander/Winota%2C%20Joiner%20of%20Forces?timePeriod=THREE_MONTHS",
-            "https://edhtop16.com/commander/Rocco%2C%20Cabaretti%20Caterer?timePeriod=THREE_MONTHS",
-            "https://edhtop16.com/commander/Azami%2C%20Lady%20of%20Scrolls?timePeriod=ONE_YEAR",
-            "https://edhtop16.com/commander/Braids%2C%20Arisen%20Nightmare?timePeriod=ALL_TIME",
-        ]
+        # Load Configuration from external YAML file in the cache dir
+        self.commander_urls = self._load_config_urls()
 
         # Load Exclusions and Caches
         self.excluded_cards = self._load_exclusions()
         self.topdeck_cache = self._load_cache(self.urls_cache_file)
         self.deck_cache = self._load_cache(self.deck_cache_file)
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
+
+    def _load_config_urls(self):
+        """Loads target deck urls from the configuration yaml file inside the cache dir."""
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r') as f:
+                    config_data = yaml.safe_load(f)
+                    if config_data and "commander_urls" in config_data:
+                        return config_data["commander_urls"]
+            except Exception as e:
+                print(f"Error parsing configuration file {self.config_file}: {e}")
+
+        print(f"Warning: {self.config_file} not found or missing 'commander_urls'. Using default empty list.")
+        return []
 
     def _load_exclusions(self):
         """Loads user-defined card exclusions and replacements."""
@@ -492,6 +494,10 @@ class MTGDeckScanner:
 
     def run(self):
         """Entry point to launch the browser and process target URLs."""
+        if not self.commander_urls:
+            print(f"No URLs configured to scrape. Ensure your configuration file exists at: {self.config_file}")
+            return
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
