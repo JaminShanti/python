@@ -1,0 +1,19 @@
+1–2: Alto Sax 1
+3–4: Alto Sax 2
+5–6: Baritone Sax
+7–9: Bass
+10–11: Trombone 1
+12–13: Trombone 2
+14–15: Trombone 3
+16–17: Trombone 4
+18–19: Drums
+20–22: Guitar
+23–26: Piano
+27–41: Conductor Score
+42–44: Tenor Sax 1
+45–46: Tenor Sax 2
+47–48: Trumpet 1
+49–50: Trumpet 2
+51–52: Trumpet 3
+53–54: Trumpet 4
+55–56: Vibes
