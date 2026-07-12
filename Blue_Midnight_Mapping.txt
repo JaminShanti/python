@@ -1,0 +1,21 @@
+1 1st Eb Alto Saxophone (Solo)
+2 1st Eb Alto Saxophone (Non Solo)
+3 2nd Eb Alto Saxophone
+4 1st Bb Tenor Saxophone
+5 Bb Tenor Saxophone
+6 Eb Baritone Saxophone
+7 Solo Bb Trumpet (Opt. Fluegelhorn)
+8 1st Bb Trumpet
+9 2nd Bb Trumpet
+10 3rd Bb Trumpet
+11 4th Bb Trumpet
+12 1st Trombone
+13 2nd Trombone
+14 3rd Trombone
+15 4th Trombone
+16-18 Piano
+19 Guitarist's Guide
+20-21 Guitar
+22-23 Bass
+24 Drums
+25-34 Conductor
