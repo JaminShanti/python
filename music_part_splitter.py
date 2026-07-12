@@ -10,22 +10,22 @@ import pytesseract
 
 class BigBandChartSplitter:
     INSTRUMENTS = [
-        ('1st Alto Sax', ['alto sax 1', 'alto 1', '1st alto', 'alto sax i', 'auto sax']),
-        ('2nd Alto Sax', ['alto sax 2', 'alto 2', '2nd alto', 'alto sax ii']),
-        ('1st Tenor Sax', ['tenor sax 1', 'tenor 1', '1st tenor', 'tenor sax i']),
-        ('2nd Tenor Sax', ['tenor sax 2', 'tenor 2', '2nd tenor', 'tenor sax ii']),
-        ('Bari Sax', ['bari sax', 'baritone sax', 'baritone', 'bari saxophone', 'bari']),
-        ('Trumpet 1', ['trumpet 1', '1st trumpet', 'trumpet i']),
-        ('Trumpet 2', ['trumpet 2', '2nd trumpet', 'trumpet ii']),
-        ('Trumpet 3', ['trumpet 3', '3rd trumpet', 'trumpet iii']),
-        ('Trumpet 4', ['trumpet 4', '4th trumpet', 'trumpet iv']),
+        ('1st Alto Sax', ['alto sax 1', 'alto 1', '1st alto', 'alto sax i', 'auto sax', '1st eb alto saxophone']),
+        ('2nd Alto Sax', ['alto sax 2', 'alto 2', '2nd alto', 'alto sax ii', '2nd eb alto saxophone']),
+        ('1st Tenor Sax', ['tenor sax 1', 'tenor 1', '1st tenor', 'tenor sax i', '1st bb tenor saxophone']),
+        ('2nd Tenor Sax', ['tenor sax 2', 'tenor 2', '2nd tenor', 'tenor sax ii', 'bb tenor saxophone']),
+        ('Bari Sax', ['bari sax', 'baritone sax', 'baritone', 'bari saxophone', 'bari', 'eb baritone saxophone']),
+        ('Trumpet 1', ['trumpet 1', '1st trumpet', 'trumpet i', 'solo bb trumpet', '1st bb trumpet']),
+        ('Trumpet 2', ['trumpet 2', '2nd trumpet', 'trumpet ii', '2nd bb trumpet']),
+        ('Trumpet 3', ['trumpet 3', '3rd trumpet', 'trumpet iii', '3rd bb trumpet']),
+        ('Trumpet 4', ['trumpet 4', '4th trumpet', 'trumpet iv', '4th bb trumpet']),
         ('Trombone 1', ['trombone 1', '1st trombone', 'trombone i']),
         ('Trombone 2', ['trombone 2', '2nd trombone', 'trombone ii']),
         ('Trombone 3', ['trombone 3', '3rd trombone', 'trombone iii']),
         ('Trombone 4', ['trombone 4', '4th trombone', 'bass trombone', 'trombone iv']),
         ('Piano', ['piano', 'pno', 'pno.']),
         ('Drums', ['drum', 'drums', 'drumset']),
-        ('Guitar', ['guitar', 'gtr']),
+        ('Guitar', ['guitar', 'gtr', 'guitarist']),
         ('Bass', ['bass', 'string bass', 'upright bass', 'electric bass']),
         ('Vibes', ['vibes', 'vibraphone'])
     ]
