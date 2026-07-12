@@ -1,6 +1,5 @@
 import os
-import re
-import yaml
+import sys
 import logging
 import pytesseract
 from pathlib import Path
@@ -8,19 +7,32 @@ from pdf2image import convert_from_path
 from PyPDF2 import PdfWriter, PdfReader
 
 
-# Note: PyPDF2 deprecated PdfFileWriter/PdfFileReader in newer versions.
-# Updated to the modern PdfWriter/PdfReader syntax.
-
 class BigBandChartSplitter:
-    """
-    A utility to split full big band PDF scores into individual instrument parts
-    using a YAML configuration and Tesseract OCR.
-    """
+    STANDARD_INSTRUMENTS = [
+        ['1st Alto Sax', '1st Eb Alto', 'Ist Eb Alto', 'ALTO SAX 1', '1st Eb Alto Saxophone', 'Alto Saxophone 1'],
+        ['2nd Alto Sax', '2nd Eb Alto', 'ALTO SAX 2', '2st Eb Alto Saxophone', '2nd Eb Alto Saxophone',
+         'Alto Saxophone 2'],
+        ['1st Tenor Sax', 'TENOR SAX 1', '1st Bb Tenor', '1st Bb Tenor Saxophone', 'Tenor Saxophone 1'],
+        ['2nd Tenor Sax', 'TENOR SAX ll', 'TENOR SAX 2', '2nd Bb Tenor Saxophone', 'Tenor Saxophone 2'],
+        ['Bari Sax', 'Eb Baritone', 'BARITONE SAX', 'Eb Baritone Saxophone', 'Baritone Saxophone'],
+        ['Trumpet 1', '1st Bb Trumpet', '1st Trumpet', 'Trumpet 1'],
+        ['Trumpet 2', '2nd Bb Trumpet', '2nd Trumpet', 'Trumpet 2'],
+        ['Trumpet 3', '3rd Bb Trumpet', '3rd Trumpet', 'Trumpet 3'],
+        ['Trumpet 4', '4th Bb Trumpet', '4rd Bb Trumpet', '4th Trumpet', 'Ard gb TRUMPET'],
+        ['Trombone 1', 'tet Trombone', '1st Trombone', 'Trombone 1'],
+        ['Trombone 2', '2nd Trombone', 'XOMBONE 2'],
+        ['Trombone 3', '3rd Trombone', 'TROMBONE3'],
+        ['Trombone 4', '4th Trombone', 'Bass Trombone'],
+        ['Piano'],
+        ['Drums', 'Drum Set'],
+        ['Guitar'],
+        ['Bass', 'String Bass', 'Electric Bass'],
+        ['Conductor Score', 'Conductor', 'Full Score']
+    ]
 
-    def __init__(self, config_path='config.yaml', log_level=logging.INFO):
+    def __init__(self, log_level=logging.INFO):
         self._setup_logger(log_level)
-        self.config_path = config_path
-        self.config = self._load_config()
+        self._normalize_instruments()
 
     def _setup_logger(self, log_level):
         self.logger = logging.getLogger(__name__)
@@ -31,107 +43,48 @@ class BigBandChartSplitter:
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
-    def _load_config(self):
-        """Loads the YAML config and normalizes the instruments list."""
-        if not os.path.exists(self.config_path):
-            self.logger.error(f"Configuration file {self.config_path} not found.")
-            return {'instruments': [], 'overrides': {}}
-
-        with open(self.config_path, 'r') as file:
-            config = yaml.load(file, Loader=yaml.FullLoader)
-
-        self.logger.debug("Normalizing single instrument names to lists")
-        # Ensure every instrument entry is a list of strings for matching
-        for i, instrument in enumerate(config.get('instruments', [])):
-            if isinstance(instrument, str):
-                config['instruments'][i] = [instrument]
-            config['instruments'][i] = [str(x) for x in config['instruments'][i]]
-
-        return config
-
-    def _parse_page_ranges(self, page_rule, total_pages):
-        """Helper to parse exact pages or ranges like '1-2' from the config."""
-        if isinstance(page_rule, int):
-            return [page_rule - 1]
-
-        page_rule = str(page_rule)
-        if page_rule.isdigit():
-            return [int(page_rule) - 1]
-
-        if re.match(r"\d+-\d+", page_rule):
-            start, end = [int(x) for x in page_rule.split("-")]
-            return list(range(start - 1, end))
-
-        return []
+    def _normalize_instruments(self):
+        self.instrument_rules = []
+        for aliases in self.STANDARD_INSTRUMENTS:
+            primary_name = aliases[0]
+            search_terms = [alias.lower() for alias in aliases]
+            self.instrument_rules.append((primary_name, search_terms))
 
     def _ocr_scan_pdf(self, pdf_file):
-        """Converts PDF to images and extracts text per page."""
         self.logger.info("Extracting Text from PDF Images per page via OCR...")
         part_list = []
         doc = convert_from_path(pdf_file)
-
         for page_number, page_data in enumerate(doc):
             self.logger.info(f"OCR Scan Page {page_number + 1}")
             txt = str(pytesseract.image_to_string(page_data, lang="eng").encode("utf-8"))
             part_list.append(txt)
-            self.logger.debug(f"Page OCR Information: {txt}")
-
         return part_list
 
     def process_pdf(self, pdf_file):
-        """Main pipeline to process a single PDF chart."""
         my_file = Path(pdf_file)
-        if not my_file.is_file():
-            self.logger.error(f"File not found: {pdf_file}")
-            return
-
+        # Fix: Now derived from my_file.parent
         file_base_name = my_file.stem
         part_folder = my_file.parent / f"{file_base_name}_parts"
 
         self.logger.info(f"Processing: {my_file.name}")
-        self.logger.info(f"Creating output directory: {part_folder}")
+        self.logger.info(f"Creating output directory at: {part_folder}")
         part_folder.mkdir(parents=True, exist_ok=True)
 
-        parts = {}  # Dictionary mapping instrument name to a list of 0-indexed page numbers
+        parts = {}
+        part_list = self._ocr_scan_pdf(pdf_file)
 
-        # Check for overrides (Fixing the notebook bug here)
-        if my_file.name in self.config.get('overrides', {}):
-            self.logger.info(f"Applying overrides for {my_file.name}")
-            override_rules = self.config['overrides'][my_file.name]
-
-            # override_rules looks like: [['1st Eb Alto Saxophone', '1-2'], ['2nd Bb Tenor Saxophone', '5-6']]
-            for instrument_rule in override_rules:
-                if len(instrument_rule) == 2:
-                    inst_name, page_rule = instrument_rule
-                    parts[inst_name] = self._parse_page_ranges(page_rule, 0)
-        else:
-            # No override, fallback to OCR
-            part_list = self._ocr_scan_pdf(pdf_file)
-
-            for instrument_aliases in self.config.get('instruments', []):
-                primary_name = instrument_aliases[0]
-                aliases_lower = [x.lower() for x in instrument_aliases]
-
-                self.logger.debug(f"Scanning for: {', '.join(aliases_lower)}")
-
-                # Check if the instrument rule includes a hardcoded page rule (e.g., ['1st Alto Sax', '1-2'])
-                if len(instrument_aliases) == 2 and (
-                        str(instrument_aliases[1]).isdigit() or re.match(r"\d+-\d+", str(instrument_aliases[1]))):
-                    self.logger.info(f"{primary_name}: Extracting hardcoded pages {instrument_aliases[1]}")
-                    parts[primary_name] = self._parse_page_ranges(instrument_aliases[1], len(part_list))
-                else:
-                    # OCR Text Matching (Checking the first 200 chars of the page)
-                    matched_pages = [
-                        i for i, page_text in enumerate(part_list)
-                        if any(alias in page_text[:200].lower() for alias in aliases_lower)
-                    ]
-                    if matched_pages:
-                        parts[primary_name] = matched_pages
+        for primary_name, aliases_lower in self.instrument_rules:
+            matched_pages = [
+                i for i, page_text in enumerate(part_list)
+                if any(alias in page_text[:250].lower() for alias in aliases_lower)
+            ]
+            if matched_pages:
+                self.logger.info(f"Found {primary_name} on pages: {[p + 1 for p in matched_pages]}")
+                parts[primary_name] = matched_pages
 
         self._extract_and_save_parts(pdf_file, part_folder, parts)
 
     def _extract_and_save_parts(self, pdf_file, output_folder, parts_map):
-        """Splits the physical PDF and writes the individual instrument files."""
         if not parts_map:
             self.logger.warning("No parts matched to extract.")
             return
@@ -140,40 +93,26 @@ class BigBandChartSplitter:
         file_name = Path(pdf_file).name
 
         for inst_name, page_numbers in parts_map.items():
-            if not page_numbers:
-                continue
-
             self.logger.info(f"Writing PDF part for {inst_name}")
             output = PdfWriter()
-
             for page_num in page_numbers:
                 if page_num < len(input_pdf.pages):
                     output.add_page(input_pdf.pages[page_num])
-                else:
-                    self.logger.warning(f"Page index {page_num} out of range for {inst_name}")
 
             output_filename = output_folder / f"{inst_name}_{file_name}"
             with open(output_filename, "wb") as output_stream:
                 output.write(output_stream)
-
-        self.logger.info("Extraction Completed successfully.")
-
-    def process_directory(self, directory='.'):
-        """Processes all PDFs in a given directory."""
-        pdf_list = [f for f in os.listdir(directory) if f.lower().endswith('.pdf')]
-        self.logger.info(f"Found {len(pdf_list)} PDFs in {directory}")
-
-        for pdf_file in pdf_list:
-            self.process_pdf(os.path.join(directory, pdf_file))
+        self.logger.info(f"Extraction Completed. Files saved to: {output_folder}")
 
 
-# --- CLI Execution ---
 if __name__ == "__main__":
-    # You can instantiate this in another script, or run it directly here.
-    splitter = BigBandChartSplitter(config_path='config.yaml', log_level=logging.DEBUG)
-
-    # Process a specific file just like cell 70 in your notebook:
-    # splitter.process_pdf('Feelings - Full Big Band (Lowden).pdf')
-
-    # Or process the whole directory:
-    # splitter.process_directory('.')
+    splitter = BigBandChartSplitter(log_level=logging.INFO)
+    try:
+        raw_input_path = input("Enter the full path to the PDF chart: ").strip().replace('"', '').replace("'", "")
+        pdf_target = Path(raw_input_path)
+        if not pdf_target.is_file():
+            print(f"\n[Error] Could not locate file at: {pdf_target}")
+            sys.exit(1)
+        splitter.process_pdf(pdf_target)
+    except KeyboardInterrupt:
+        sys.exit(0)
