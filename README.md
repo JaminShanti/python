@@ -28,9 +28,9 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 * **`NYSE Trending Report.py`**: Generates a high-performance dividend report for S&P 500, 400, and 600 stocks. Uses Yahoo Finance's bulk quote API for speed and exports reports as HTML/PDF.
 * **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time. Recently upgraded to use **Plotly** for modern, interactive visualizations.
-	+ Generates interactive **HTML** reports, as well as shareable **PNG** and **PDF** exports.
-	+ Features intelligent legend management (Top N channels) to ensure clarity in large datasets.
-	+ Supports standalone plot generation without re-fetching data via the `--plot` switch.
+    + Generates interactive **HTML** reports, as well as shareable **PNG** and **PDF** exports.
+    + Features intelligent legend management (Top N channels) to ensure clarity in large datasets.
+    + Supports standalone plot generation without re-fetching data via the `--plot` switch.
 * **`rotten_tomato_user_reviews.py`**: Scrapes user reviews from Rotten Tomatoes for movies or TV shows, performs sentiment analysis (rating average), and generates word clouds.
 * **`Git_Log_Report.py`**: Analyzes a Git repository's history to generate reports on commit activity, authors, and file changes.
 * **`Corona_Mapping.py`**: Visualizes COVID-19 data, likely creating choropleth maps (e.g., `covid_choropleth_*.html`) to show spread or impact by region.
@@ -40,6 +40,14 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 * **`mtg-dip-detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements, particularly useful for monitoring Reserved List assets.
 * **`mtg_scanner_tool.py`**: A custom market data scanner designed to aid in evaluating collection values and optimizing deck builds for the Commander format (such as Rocco, Cabaretti Caterer). It now supports **caching** for faster subsequent runs and uses an external `excluded_cards.txt` file for easy management of cards to ignore.
 
+### Document Processing
+
+* **`music_part_splitter.py`**: Automates the extraction of individual instrument parts from full Big Band master score PDFs. 
+    + Uses OCR (`pytesseract`) to scan pages and automatically separate parts (1st Alto, 2nd Trumpet, Drums, etc.) into individually named PDF files.
+    + Smart multi-page grouping keeps long charts together automatically.
+    + Features an interactive CLI Wizard that catches unrecognized or misprinted OCR text, allowing you to manually assign the part.
+    + **Self-Learning:** Uses an `instruments.yaml` configuration file. When you correct a misread in the Wizard, the script updates the YAML file to permanently remember the fix for future runs. Completely customizable for any ensemble layout.
+
 ### Miscellaneous
 
 * **`lastgitcommit.py`**: A utility to retrieve details about the most recent Git commit.
@@ -47,15 +55,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ## How to Run
 
-Prerequisites:
-
-* Windows, Python 3.13+
-* `git` on PATH
-* Python packages: `GitPython`, `pandas`, `matplotlib`, `plotly`, `kaleido`, `boto3`, `requests`, `bigsuds`, `PyYAML`, `yfinance`, `numpy`, `tqdm`, `pandas-datareader`, `imgkit`, `IPython`, `paramiko`, `wordcloud`, `yagmail`, `tabulate`, `html2text`, `fbchat`, `playwright`, `beautifulsoup4`
-
-Install:
-
-```bash
-pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds pyyaml yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat playwright beautifulsoup4
-playwright install chromium
-```
+### System Prerequisites (Windows)
+Some scripts (like `music_part_splitter.py`) require underlying system binaries to handle PDFs and OCR image processing. You will need to install the following and ensure they are added to your Windows system `PATH`:
+1. **Tesseract OCR:** Download the Windows installer from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki).
+2. **Poppler:** Download the latest Windows release from [oschwartz10612](
