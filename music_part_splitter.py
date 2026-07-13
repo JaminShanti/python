@@ -10,23 +10,23 @@ import pytesseract
 
 class BigBandChartSplitter:
     INSTRUMENTS = [
-        ('1st Alto Sax', ['alto sax 1', 'alto 1', '1st alto', 'alto sax i', 'auto sax', '1st eb alto saxophone']),
-        ('2nd Alto Sax', ['alto sax 2', 'alto 2', '2nd alto', 'alto sax ii', '2nd eb alto saxophone']),
-        ('1st Tenor Sax', ['tenor sax 1', 'tenor 1', '1st tenor', 'tenor sax i', '1st bb tenor saxophone']),
-        ('2nd Tenor Sax', ['tenor sax 2', 'tenor 2', '2nd tenor', 'tenor sax ii', 'bb tenor saxophone']),
-        ('Bari Sax', ['bari sax', 'baritone sax', 'baritone', 'bari saxophone', 'bari', 'eb baritone saxophone']),
-        ('Trumpet 1', ['trumpet 1', '1st trumpet', 'trumpet i', 'solo bb trumpet', '1st bb trumpet']),
-        ('Trumpet 2', ['trumpet 2', '2nd trumpet', 'trumpet ii', '2nd bb trumpet']),
-        ('Trumpet 3', ['trumpet 3', '3rd trumpet', 'trumpet iii', '3rd bb trumpet']),
+        ('1st Alto Sax', ['alto sax 1', 'alto 1', '1st alto', 'alto sax i', 'auto sax', '1st eb alto saxophone', 'tst eb alto saxophone', '1st alto saxophone']),
+        ('2nd Alto Sax', ['alto sax 2', 'alto 2', '2nd alto', 'alto sax ii', '2nd eb alto saxophone', '2nd ep? alto saxophone', '2nd alto saxophone', '2nd eb alto']),
+        ('1st Tenor Sax', ['tenor sax 1', 'tenor 1', '1st tenor', 'tenor sax i', '1st bb tenor saxophone', '1st tenor saxophone', '1st bb tenor']),
+        ('2nd Tenor Sax', ['tenor sax 2', 'tenor 2', '2nd tenor', 'tenor sax ii', 'bb tenor saxophone', '2nd bb tenor', '2nd bb tenor saxophone', '2nd tenor saxophone']),
+        ('Bari Sax', ['bari sax', 'baritone sax', 'baritone', 'bari saxophone', 'bari', 'eb baritone saxophone', 'e? baritone saxophone', 'baritone saxophone']),
+        ('Trumpet 1', ['trumpet 1', '1st trumpet', 'trumpet i', 'solo bb trumpet', '1st bb trumpet', '1st b trumpet', 'ist b trumpet', 'ist bb trumpet']),
+        ('Trumpet 2', ['trumpet 2', '2nd trumpet', 'trumpet ii', '2nd bb trumpet', '2nd b trumpet']),
+        ('Trumpet 3', ['trumpet 3', '3rd trumpet', 'trumpet iii', '3rd bb trumpet', '3rd b trumpet']),
         ('Trumpet 4', ['trumpet 4', '4th trumpet', 'trumpet iv', '4th bb trumpet']),
-        ('Trombone 1', ['trombone 1', '1st trombone', 'trombone i']),
+        ('Trombone 1', ['trombone 1', '1st trombone', 'trombone i', 'ist trombone']),
         ('Trombone 2', ['trombone 2', '2nd trombone', 'trombone ii']),
-        ('Trombone 3', ['trombone 3', '3rd trombone', 'trombone iii']),
+        ('Trombone 3', ['trombone 3', '3rd trombone', 'trombone iii', 'dd, trombone']),
         ('Trombone 4', ['trombone 4', '4th trombone', 'bass trombone', 'trombone iv']),
-        ('Piano', ['piano', 'pno', 'pno.']),
-        ('Drums', ['drum', 'drums', 'drumset']),
-        ('Guitar', ['guitar', 'gtr', 'guitarist']),
-        ('Bass', ['bass', 'string bass', 'upright bass', 'electric bass']),
+        ('Piano', ['piano', 'pno', 'pno.', 'piano 1', 'piano 2', 'piano 3']),
+        ('Drums', ['drum', 'drums', 'drumset', 'drum set', 'percussion']),
+        ('Guitar', ['guitar', 'gtr', 'guitarist', "guitarist's guide", "guitarist's"]),
+        ('Bass', ['string bass', 'upright bass', 'electric bass', 'bass guitar', 'bass (string bass)', 'bass aad', 'bass']),
         ('Vibes', ['vibes', 'vibraphone'])
     ]
 
@@ -41,6 +41,15 @@ class BigBandChartSplitter:
 
     def _normalize(self, text):
         text = text.lower()
+
+        # Global Typos
+        text = text.replace('1st.', '1st')
+        text = text.replace('2nd.', '2nd')
+        text = text.replace('3rd.', '3rd')
+        text = text.replace('4th.', '4th')
+        text = text.replace('tst ', '1st ')
+        text = text.replace('ep?', 'eb')
+        text = text.replace('dd, trombone', '3rd trombone')
 
         # Saxophones
         text = re.sub(r'\balto sax 4\b', 'alto sax 1', text)
@@ -67,7 +76,9 @@ class BigBandChartSplitter:
 
     def _get_best_match(self, text):
         lines = [line for line in text.splitlines() if line.strip()]
-        header_text = "\n".join(lines[:30])
+        # Filter to meaningful lines (not single-char OCR garbage like '>', '=', 'uu')
+        meaningful_lines = [l for l in lines if len(l.strip()) > 2 and re.search(r'[a-z]', l)]
+        header_text = "\n".join(meaningful_lines[:20])
 
         best_inst = None
         highest_score = 0
@@ -91,7 +102,7 @@ class BigBandChartSplitter:
                     for i in range(0, max(1, len(words) - n + 1)):
                         candidate = " ".join(words[i:i + n])
                         ratio = difflib.SequenceMatcher(None, candidate, a).ratio()
-                        if ratio >= 0.78:
+                        if ratio >= 0.88:
                             fscore += 1
                 if fscore > highest_score:
                     highest_score = fscore
@@ -134,11 +145,11 @@ class BigBandChartSplitter:
 
             # 1. SCORE LOCK-IN: The score runs uninterrupted until a definitive new title page is found.
             # This completely ignores margin cues like "Guitar" on page 28.
-            if last_inst == 'Conductor Score' and not is_first_page_of_part:
+            if last_inst == 'Conductor Score' and not (is_first_page_of_part or detected):
                 current_inst = 'Conductor Score'
 
             # 2. DETECT SCORE START
-            elif re.search(r'\b(conductor|score|ssanuvsn|nolonihsvaa|yotavl)\b', text):
+            elif re.search(r'\b(conductor|score|ssanuvsn|nolonihsvaa|yotavl)\b|40\}9nnpuo|jojonpvon|jo,onpuot,|holininod|jojonpuad', text):
                 current_inst = 'Conductor Score'
                 is_new_detection = True
                 last_title_page = i
@@ -163,6 +174,9 @@ class BigBandChartSplitter:
                             'Trombone 1': 'Trombone 2',
                             'Trombone 2': 'Trombone 3',
                             'Trombone 3': 'Trombone 4',
+                            'Guitar': 'Bass',
+                            'Bass': 'Drums',
+                            'Drums': 'Piano',
                         }
                         current_inst = bump_map.get(detected, detected)
                 else:
@@ -177,6 +191,9 @@ class BigBandChartSplitter:
                         'Trombone 1': 'Trombone 2',
                         'Trombone 2': 'Trombone 3',
                         'Trombone 3': 'Trombone 4',
+                        'Guitar': 'Bass',
+                        'Bass': 'Drums',
+                        'Drums': 'Piano',
                     }
                     current_inst = blind_bump_map.get(last_inst, last_inst)
 
@@ -185,18 +202,22 @@ class BigBandChartSplitter:
 
             # 4. CONTINUATION PAGES
             else:
-                distance = i - last_detected_page
-
-                # ENFORCE CONTINUATION: If within a safe multi-page window (4 pages max for standard parts)
-                # FORCE continuation. This ignores false-positive cues like "Bass" on page 2 of Guitar.
-                if last_inst is not None and distance <= 3:
-                    current_inst = last_inst
-                elif detected:
-                    # Outside window, but found something? Trust it.
+                if detected and detected != last_inst:
                     current_inst = detected
                     is_new_detection = True
                 else:
-                    current_inst = None
+                    distance = i - last_detected_page
+
+                    # ENFORCE CONTINUATION: If within a safe multi-page window (4 pages max for standard parts)
+                    # FORCE continuation. This ignores false-positive cues like "Bass" on page 2 of Guitar.
+                    if last_inst is not None and distance <= 3:
+                        current_inst = last_inst
+                    elif detected:
+                        # Outside window, but found something? Trust it.
+                        current_inst = detected
+                        is_new_detection = True
+                    else:
+                        current_inst = None
 
             # OCR CONTEXT HACK: In PSM 3, "Trombone 3" occasionally scans literally as "Trombone 4"
             if is_new_detection and current_inst == 'Trombone 4' and last_inst == 'Trombone 2':
