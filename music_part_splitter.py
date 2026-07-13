@@ -2,6 +2,8 @@ import re
 import difflib
 import logging
 import argparse
+import yaml
+import sys
 from pathlib import Path
 from PyPDF2 import PdfWriter, PdfReader
 from pdf2image import convert_from_path
@@ -9,81 +11,99 @@ import pytesseract
 
 
 class BigBandChartSplitter:
-    INSTRUMENTS = [
-        ('1st Alto Sax', ['alto sax 1', 'alto 1', '1st alto', 'alto sax i', 'auto sax', '1st eb alto saxophone', 'tst eb alto saxophone', '1st alto saxophone']),
-        ('2nd Alto Sax', ['alto sax 2', 'alto 2', '2nd alto', 'alto sax ii', '2nd eb alto saxophone', '2nd ep? alto saxophone', '2nd alto saxophone', '2nd eb alto']),
-        ('1st Tenor Sax', ['tenor sax 1', 'tenor 1', '1st tenor', 'tenor sax i', '1st bb tenor saxophone', '1st tenor saxophone', '1st bb tenor']),
-        ('2nd Tenor Sax', ['tenor sax 2', 'tenor 2', '2nd tenor', 'tenor sax ii', 'bb tenor saxophone', '2nd bb tenor', '2nd bb tenor saxophone', '2nd tenor saxophone']),
-        ('Bari Sax', ['bari sax', 'baritone sax', 'baritone', 'bari saxophone', 'bari', 'eb baritone saxophone', 'e? baritone saxophone', 'baritone saxophone']),
-        ('Trumpet 1', ['trumpet 1', '1st trumpet', 'trumpet i', 'solo bb trumpet', '1st bb trumpet', '1st b trumpet', 'ist b trumpet', 'ist bb trumpet']),
-        ('Trumpet 2', ['trumpet 2', '2nd trumpet', 'trumpet ii', '2nd bb trumpet', '2nd b trumpet']),
-        ('Trumpet 3', ['trumpet 3', '3rd trumpet', 'trumpet iii', '3rd bb trumpet', '3rd b trumpet']),
-        ('Trumpet 4', ['trumpet 4', '4th trumpet', 'trumpet iv', '4th bb trumpet']),
-        ('Trombone 1', ['trombone 1', '1st trombone', 'trombone i', 'ist trombone']),
-        ('Trombone 2', ['trombone 2', '2nd trombone', 'trombone ii']),
-        ('Trombone 3', ['trombone 3', '3rd trombone', 'trombone iii', 'dd, trombone']),
-        ('Trombone 4', ['trombone 4', '4th trombone', 'bass trombone', 'trombone iv']),
-        ('Piano', ['piano', 'pno', 'pno.', 'piano 1', 'piano 2', 'piano 3']),
-        ('Drums', ['drum', 'drums', 'drumset', 'drum set', 'percussion']),
-        ('Guitar', ['guitar', 'gtr', 'guitarist', "guitarist's guide", "guitarist's"]),
-        ('Bass', ['string bass', 'upright bass', 'electric bass', 'bass guitar', 'bass (string bass)', 'bass aad', 'bass']),
-        ('Vibes', ['vibes', 'vibraphone'])
-    ]
-
-    def __init__(self, log_level=logging.INFO, psm=3):
+    def __init__(self, config_path, log_level=logging.INFO):
         self.logger = logging.getLogger("BigBandSplitter")
         self.logger.setLevel(log_level)
-        self.psm = psm
+        self.config_path = config_path
+
         if not self.logger.handlers:
             h = logging.StreamHandler()
             h.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
             self.logger.addHandler(h)
 
-    def _normalize(self, text):
-        text = text.lower()
+        self.conductor_aliases = []
+        self.conductor_regex = None
+        self.instruments = []
 
-        # Global Typos
-        text = text.replace('1st.', '1st')
-        text = text.replace('2nd.', '2nd')
-        text = text.replace('3rd.', '3rd')
-        text = text.replace('4th.', '4th')
-        text = text.replace('tst ', '1st ')
-        text = text.replace('ep?', 'eb')
-        text = text.replace('dd, trombone', '3rd trombone')
+        self._load_config(config_path)
 
-        # Saxophones
-        text = re.sub(r'\balto sax 4\b', 'alto sax 1', text)
-        text = re.sub(r'\bauto sax\b', 'alto sax 1', text)
-        text = re.sub(r'\balto sax\s*7\b', 'alto sax 1', text)
-        text = re.sub(r'\bbacitone\b', 'baritone', text)
-        text = re.sub(r'\bbacitone sax\b', 'baritone sax', text)
-        text = re.sub(r'\btenoe\b', 'tenor', text)
+    def _load_config(self, config_path):
+        """Loads instrument definitions from a YAML file."""
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
 
-        # Trombones
-        text = re.sub(r'\b(toombone|t2ombone|teomsone|qombone|trombome)\b', 'trombone', text)
-        text = re.sub(r'\btrombone\s*(\d)\b', r'trombone \1', text)
+            self.conductor_aliases = config.get('conductor_aliases', ['conductor', 'score'])
+            self._build_conductor_regex()
 
-        # Trumpets
-        text = re.sub(r'\b(teumper|teumrer|eumeer)\b', 'trumpet', text)
+            self.instruments = [(inst['name'], inst['aliases']) for inst in config.get('instruments', [])]
+        except Exception as e:
+            self.logger.error(f"Failed to load configuration from {config_path}: {e}")
+            sys.exit(1)
 
-        # Rhythm Section
-        text = re.sub(r'\bp no\b', 'pno', text)
-        text = re.sub(r'\bp\s*no\b', 'pno', text)
-        text = re.sub(r'\boeums\b', 'drums', text)
-        text = re.sub(r'\b(guirae|uitae)\b', 'guitar', text)
+    def _build_conductor_regex(self):
+        """Dynamically builds the regex used to identify Conductor Scores."""
+        patterns = []
+        for a in self.conductor_aliases:
+            if re.match(r'^\w+$', a):
+                patterns.append(r'\b' + a + r'\b')
+            else:
+                patterns.append(re.escape(a))
+        self.conductor_regex = re.compile('|'.join(patterns))
 
-        return text
+    def _get_next_instrument(self, current_name):
+        """Returns the next instrument in the sequence based on YAML order."""
+        for i, (name, _) in enumerate(self.instruments):
+            if name == current_name and i + 1 < len(self.instruments):
+                return self.instruments[i + 1][0]
+        return current_name
+
+    def _add_alias_to_config(self, instrument_name, new_alias):
+        """Adds a new alias to the YAML config and in-memory list."""
+        new_alias = new_alias.lower().strip()
+
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f)
+
+            if instrument_name == 'Conductor Score':
+                if new_alias not in self.conductor_aliases:
+                    self.conductor_aliases.append(new_alias)
+                    self._build_conductor_regex()
+
+                if 'conductor_aliases' not in config_data:
+                    config_data['conductor_aliases'] = []
+                if new_alias not in config_data['conductor_aliases']:
+                    config_data['conductor_aliases'].append(new_alias)
+            else:
+                for i, (name, aliases) in enumerate(self.instruments):
+                    if name == instrument_name:
+                        if new_alias not in aliases:
+                            aliases.append(new_alias)
+                        break
+
+                for inst in config_data.get('instruments', []):
+                    if inst['name'] == instrument_name:
+                        if new_alias not in inst['aliases']:
+                            inst['aliases'].append(new_alias)
+                        break
+
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+            self.logger.info(f"Learned new alias: '{new_alias}' saved to {instrument_name}.")
+        except Exception as e:
+            self.logger.error(f"Failed to save new alias to config: {e}")
 
     def _get_best_match(self, text):
         lines = [line for line in text.splitlines() if line.strip()]
-        # Filter to meaningful lines (not single-char OCR garbage like '>', '=', 'uu')
-        meaningful_lines = [l for l in lines if len(l.strip()) > 2 and re.search(r'[a-z]', l)]
+        meaningful_lines = [l for l in lines if len(l.strip()) > 2 and re.search(r'[a-z0-9]', l)]
         header_text = "\n".join(meaningful_lines[:20])
 
         best_inst = None
         highest_score = 0
 
-        for name, aliases in self.INSTRUMENTS:
+        for name, aliases in self.instruments:
             score = 0
             for a in aliases:
                 score += len(re.findall(r"\b" + re.escape(a) + r"\b", header_text))
@@ -93,7 +113,7 @@ class BigBandChartSplitter:
 
         if highest_score == 0:
             words = [w for w in re.findall(r"[a-z0-9]+", header_text)]
-            for name, aliases in self.INSTRUMENTS:
+            for name, aliases in self.instruments:
                 fscore = 0
                 for a in aliases:
                     a_words = re.findall(r"[a-z0-9]+", a)
@@ -109,6 +129,55 @@ class BigBandChartSplitter:
                     best_inst = name
 
         return best_inst if highest_score > 0 else None
+
+    def _run_wizard(self, page_index, text):
+        print(f"\n{'=' * 60}")
+        print(f"⚠️ WIZARD: Unrecognized Part on Page {page_index + 1} ⚠️")
+        print(f"{'=' * 60}")
+
+        lines = [line for line in text.splitlines() if line.strip()]
+        meaningful_lines = [l for l in lines if len(l.strip()) > 2 and re.search(r'[a-z0-9]', l)]
+        snippet = "\n".join(meaningful_lines[:6])
+
+        print("--- Top OCR Text Snippet ---")
+        print(snippet if snippet else "[No legible text found]")
+        print("----------------------------\n")
+
+        print("Please select the correct instrument for this page:")
+        print("0. Skip / I don't know")
+
+        for idx, (name, _) in enumerate(self.instruments, 1):
+            print(f"{idx:2d}. {name}")
+
+        print(f"{len(self.instruments) + 1:2d}. Conductor Score")
+
+        while True:
+            try:
+                choice = input("\nEnter number (or hit Enter to skip): ").strip()
+                if not choice:
+                    return None
+
+                choice = int(choice)
+                if choice == 0:
+                    return None
+                elif 1 <= choice <= len(self.instruments):
+                    chosen_inst = self.instruments[choice - 1][0]
+                elif choice == len(self.instruments) + 1:
+                    chosen_inst = 'Conductor Score'
+                else:
+                    print("Invalid selection. Please choose a number from the list.")
+                    continue
+
+                print(f"\nSelected: {chosen_inst}")
+                alias_input = input(
+                    f"Type a snippet from the text above to identify this part in the future (or hit Enter to skip): ").strip()
+                if alias_input:
+                    self._add_alias_to_config(chosen_inst, alias_input)
+
+                return chosen_inst
+
+            except ValueError:
+                print("Please enter a valid number.")
 
     def process_file(self, file_path, dump=False):
         self.logger.info(f"Starting processing for: {file_path.name}")
@@ -130,98 +199,61 @@ class BigBandChartSplitter:
         part_instance_count = {}
 
         for i, img in enumerate(images):
-            text = self._normalize(pytesseract.image_to_string(img.convert('L'), config=f'--psm {self.psm}'))
+            # Only downcase the string now; no regex normalization
+            text = pytesseract.image_to_string(img.convert('L'), config='--psm 3').lower()
             raw_ocr_dump.append(f"PAGE {i + 1}:\n{text}")
 
             detected = self._get_best_match(text)
-
-            # Check if this page is the START of a new part
             is_first_page_of_part = bool(re.search(r'\b(arranged by|music by|words by|composed by)\b', text))
 
             self.logger.debug(
                 f"Page {i + 1} OCR length={len(text)}; detected={detected}; is_first_page={is_first_page_of_part}")
 
             is_new_detection = False
+            current_inst = None
 
-            # 1. SCORE LOCK-IN: The score runs uninterrupted until a definitive new title page is found.
-            # This completely ignores margin cues like "Guitar" on page 28.
             if last_inst == 'Conductor Score' and not (is_first_page_of_part or detected):
                 current_inst = 'Conductor Score'
 
-            # 2. DETECT SCORE START
-            elif re.search(r'\b(conductor|score|ssanuvsn|nolonihsvaa|yotavl)\b|40\}9nnpuo|jojonpvon|jo,onpuot,|holininod|jojonpuad', text):
+            elif self.conductor_regex.search(text):
                 current_inst = 'Conductor Score'
                 is_new_detection = True
                 last_title_page = i
 
-            # 3. DETECT NEW TITLE PAGE
             elif is_first_page_of_part:
                 if detected:
                     current_inst = detected
-
-                    # BUMP LOGIC: Handle misprinted or chopped-off part names
                     if (i - last_title_page) > 1:
                         part_instance_count[detected] = part_instance_count.get(detected, 0) + 1
 
                     count = part_instance_count.get(detected, 1)
                     if count == 2:
-                        bump_map = {
-                            '1st Alto Sax': '2nd Alto Sax',
-                            '1st Tenor Sax': '2nd Tenor Sax',
-                            'Trumpet 1': 'Trumpet 2',
-                            'Trumpet 2': 'Trumpet 3',
-                            'Trumpet 3': 'Trumpet 4',
-                            'Trombone 1': 'Trombone 2',
-                            'Trombone 2': 'Trombone 3',
-                            'Trombone 3': 'Trombone 4',
-                            'Guitar': 'Bass',
-                            'Bass': 'Drums',
-                            'Drums': 'Piano',
-                        }
-                        current_inst = bump_map.get(detected, detected)
+                        current_inst = self._get_next_instrument(detected)
                 else:
-                    # BLIND BUMP LOGIC: Found a title page, but OCR failed to read the header entirely.
-                    # Assume it's the next logical part in the sequence (Fixes Trumpet 3!).
-                    blind_bump_map = {
-                        '1st Alto Sax': '2nd Alto Sax',
-                        '1st Tenor Sax': '2nd Tenor Sax',
-                        'Trumpet 1': 'Trumpet 2',
-                        'Trumpet 2': 'Trumpet 3',
-                        'Trumpet 3': 'Trumpet 4',
-                        'Trombone 1': 'Trombone 2',
-                        'Trombone 2': 'Trombone 3',
-                        'Trombone 3': 'Trombone 4',
-                        'Guitar': 'Bass',
-                        'Bass': 'Drums',
-                        'Drums': 'Piano',
-                    }
-                    current_inst = blind_bump_map.get(last_inst, last_inst)
+                    current_inst = self._get_next_instrument(last_inst)
 
                 is_new_detection = True
                 last_title_page = i
 
-            # 4. CONTINUATION PAGES
             else:
                 if detected and detected != last_inst:
                     current_inst = detected
                     is_new_detection = True
                 else:
                     distance = i - last_detected_page
-
-                    # ENFORCE CONTINUATION: If within a safe multi-page window (4 pages max for standard parts)
-                    # FORCE continuation. This ignores false-positive cues like "Bass" on page 2 of Guitar.
                     if last_inst is not None and distance <= 3:
                         current_inst = last_inst
                     elif detected:
-                        # Outside window, but found something? Trust it.
                         current_inst = detected
                         is_new_detection = True
-                    else:
-                        current_inst = None
 
-            # OCR CONTEXT HACK: In PSM 3, "Trombone 3" occasionally scans literally as "Trombone 4"
             if is_new_detection and current_inst == 'Trombone 4' and last_inst == 'Trombone 2':
                 current_inst = 'Trombone 3'
+
+            if current_inst is None:
+                current_inst = self._run_wizard(i, text)
+                if current_inst:
+                    is_new_detection = True
 
             if current_inst:
                 parts.setdefault(current_inst, []).append(i)
@@ -242,12 +274,10 @@ class BigBandChartSplitter:
         self._save(file_path, out_dir, parts)
 
     def _sanitize_filename(self, name):
-        # Replace non-alphanumeric characters with underscores
         return re.sub(r'[^a-zA-Z0-9]', '_', name)
 
     def _save(self, source, out_dir, parts):
         reader = PdfReader(source)
-        # Get the clean title of the PDF
         pdf_title = self._sanitize_filename(source.stem)
 
         for name, pages in parts.items():
@@ -255,7 +285,6 @@ class BigBandChartSplitter:
             for p in pages:
                 writer.add_page(reader.pages[p])
 
-            # Format: PartName_PDFTitle.pdf
             clean_part_name = self._sanitize_filename(name)
             out_filename = f"{clean_part_name}_{pdf_title}.pdf"
             out_file = out_dir / out_filename
@@ -267,12 +296,12 @@ class BigBandChartSplitter:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('path')
-    parser.add_argument('-d', '--debug', action='store_true')
-    parser.add_argument('--dump', action='store_true')
-    parser.add_argument('--psm', type=int, default=3, help='Tesseract PSM mode (0-13, default 3)')
+    parser.add_argument('path', help='Path to the PDF file')
+    parser.add_argument('-c', '--config', default='instruments.yaml', help='Path to the YAML config file')
+    parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--dump', action='store_true', help='Dump raw OCR text to a file')
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO
-    splitter = BigBandChartSplitter(log_level=level, psm=args.psm)
+    splitter = BigBandChartSplitter(config_path=args.config, log_level=level)
     splitter.process_file(Path(args.path), dump=args.dump)

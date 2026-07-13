@@ -1,0 +1,152 @@
+---
+conductor_aliases:
+  - conductor
+  - score
+  - ssanuvsn
+  - nolonihsvaa
+  - yotavl
+  - 40}9nnpuo
+  - jojonpvon
+  - jo,onpuot,
+  - holininod
+  - jojonpuad
+
+instruments:
+- name: 1st Alto Sax
+  aliases:
+  - alto sax 1
+  - alto 1
+  - 1st alto
+  - alto sax i
+  - auto sax
+  - 1st eb alto saxophone
+  - tst eb alto saxophone
+  - 1st alto saxophone
+  - ist eb alto sax
+- name: 2nd Alto Sax
+  aliases:
+  - alto sax 2
+  - alto 2
+  - 2nd alto
+  - alto sax ii
+  - 2nd eb alto saxophone
+  - 2nd ep? alto saxophone
+  - 2nd alto saxophone
+  - 2nd eb alto
+- name: 1st Tenor Sax
+  aliases:
+  - tenor sax 1
+  - tenor 1
+  - 1st tenor
+  - tenor sax i
+  - 1st bb tenor saxophone
+  - 1st tenor saxophone
+  - 1st bb tenor
+- name: 2nd Tenor Sax
+  aliases:
+  - tenor sax 2
+  - tenor 2
+  - 2nd tenor
+  - tenor sax ii
+  - bb tenor saxophone
+  - 2nd bb tenor
+  - 2nd bb tenor saxophone
+  - 2nd tenor saxophone
+- name: Bari Sax
+  aliases:
+  - bari sax
+  - baritone sax
+  - baritone
+  - bari saxophone
+  - bari
+  - eb baritone saxophone
+  - e? baritone saxophone
+  - baritone saxophone
+- name: Trumpet 1
+  aliases:
+  - trumpet 1
+  - 1st trumpet
+  - trumpet i
+  - solo bb trumpet
+  - 1st bb trumpet
+  - 1st b trumpet
+  - ist b trumpet
+  - ist bb trumpet
+- name: Trumpet 2
+  aliases:
+  - trumpet 2
+  - 2nd trumpet
+  - trumpet ii
+  - 2nd bb trumpet
+  - 2nd b trumpet
+- name: Trumpet 3
+  aliases:
+  - trumpet 3
+  - 3rd trumpet
+  - trumpet iii
+  - 3rd bb trumpet
+  - 3rd b trumpet
+- name: Trumpet 4
+  aliases:
+  - trumpet 4
+  - 4th trumpet
+  - trumpet iv
+  - 4th bb trumpet
+- name: Trombone 1
+  aliases:
+  - trombone 1
+  - 1st trombone
+  - trombone i
+  - ist trombone
+- name: Trombone 2
+  aliases:
+  - trombone 2
+  - 2nd trombone
+  - trombone ii
+- name: Trombone 3
+  aliases:
+  - trombone 3
+  - 3rd trombone
+  - trombone iii
+  - dd, trombone
+- name: Trombone 4
+  aliases:
+  - trombone 4
+  - 4th trombone
+  - bass trombone
+  - trombone iv
+- name: Piano
+  aliases:
+  - piano
+  - pno
+  - pno.
+  - piano 1
+  - piano 2
+  - piano 3
+- name: Drums
+  aliases:
+  - drum
+  - drums
+  - drumset
+  - drum set
+  - percussion
+- name: Guitar
+  aliases:
+  - guitar
+  - gtr
+  - guitarist
+  - guitarist's guide
+  - guitarist's
+- name: Bass
+  aliases:
+  - string bass
+  - upright bass
+  - electric bass
+  - bass guitar
+  - bass (string bass)
+  - bass aad
+  - bass
+- name: Vibes
+  aliases:
+  - vibes
+  - vibraphone
