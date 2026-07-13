@@ -58,4 +58,14 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 ### System Prerequisites (Windows)
 Some scripts (like `music_part_splitter.py`) require underlying system binaries to handle PDFs and OCR image processing. You will need to install the following and ensure they are added to your Windows system `PATH`:
 1. **Tesseract OCR:** Download the Windows installer from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki).
-2. **Poppler:** Download the latest Windows release from [oschwartz10612](
+2. **Poppler:** Download the latest Windows release from [oschwartz10612](https://github.com/oschwartz10612/poppler-windows/releases/), extract the folder, and add its `/bin` directory to your System PATH.
+
+### Environment Setup
+* Windows, Python 3.13+
+* `git` on PATH
+
+Install required Python packages:
+
+```bash
+pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds PyYAML yfinance numpy tqdm pandas-datareader imgkit ipython paramiko wordcloud yagmail tabulate html2text fbchat playwright beautifulsoup4 PyPDF2 pdf2image pytesseract
+playwright install chromium
