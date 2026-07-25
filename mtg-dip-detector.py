@@ -17,10 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 class MTGDipDetector:
-    def __init__(self, cache_dir='mtg_cache', high_window=45, min_dip=40.0,
+    def __init__(self, cache_dir='mtg_cache', output_dir='mtg_dip_output', high_window=45, min_dip=40.0,
                  min_drop=1.00, min_set_age=60, min_historical_high=4.00):
         self.cache_dir = os.path.abspath(cache_dir)
+        self.output_dir = os.path.abspath(output_dir) # New output directory
         os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True) # Ensure output directory exists
+
         self.high_window, self.min_dip = high_window, min_dip
         self.min_drop, self.min_set_age = min_drop, min_set_age
         self.min_historical_high = min_historical_high
@@ -90,7 +93,7 @@ class MTGDipDetector:
         return d
 
     def generate_tcg_import(self, df):
-        fname = f"TCGplayer_Import_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt"
+        fname = os.path.join(self.output_dir, f"TCGplayer_Import_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.txt") # Save to output_dir
         with open(fname, 'w', encoding='utf-8') as f:
             for name in df['Card Name'].unique():
                 clean = name.split(' // ')[0].strip()
@@ -101,7 +104,8 @@ class MTGDipDetector:
     def generate_pdf(self, df):
         if not HAS_MATPLOTLIB: return
         ts = datetime.now().strftime('%Y-%m-%d_%H-%M')
-        pdf_f, png_f = f"MTG_Dips_{ts}.pdf", f"MTG_Dips_{ts}.png"
+        pdf_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.pdf") # Save to output_dir
+        png_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.png") # Save to output_dir
 
         row_h, head_h, title_h, foot_h = 0.35, 0.4, 0.15, 0.05
         total_h = (len(df) * row_h) + head_h + title_h + foot_h

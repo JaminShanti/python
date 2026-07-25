@@ -37,7 +37,7 @@ class GitLogReport:
     Generate git activity plots for a repository.
     """
 
-    def __init__(self, repo_path: str = ".", since: str = "last month", outdir: str = ".") -> None:
+    def __init__(self, repo_path: str = ".", since: str = "last month", outdir: str = "git_output") -> None: # Changed default outdir
         self.repo_path = repo_path
         self.since = since
         self.outdir = outdir
@@ -92,7 +92,7 @@ class GitLogReport:
             # And numstat lines like: 1	1	filename
             # The read_csv with sep='\t' handles this by treating the empty fields in numstat lines as NaNs?
             # Actually, numstat lines have 3 columns. The metadata line has empty first 3 cols if we use the format above?
-            # No, the format string "\t\t\t%h\t%ad\t%aN" creates a line starting with 3 tabs.
+            # No, the format string "\t\t\t%h..." creates a line starting with 3 tabs.
             # So it aligns with "additions", "deletions", "filename", "sha", "timestamp", "author"
             # where the first 3 are empty for metadata rows.
             # And numstat rows have data in first 3 cols, and empty in last 3?
@@ -230,7 +230,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Git Activity Reports")
     parser.add_argument("--repo", "-r", default=".", help="Path to git repository")
     parser.add_argument("--since", "-s", default="last month", help="Timeframe (e.g., '1 week ago', '2023-01-01')")
-    parser.add_argument("--outdir", "-o", default=".", help="Output directory for reports")
+    parser.add_argument("--outdir", "-o", default="git_output", help="Output directory for reports") # Updated default
     
     args = parser.parse_args()
 

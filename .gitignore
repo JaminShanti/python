@@ -1,13 +1,11 @@
 /dividend_report*
-/market_data_cache.csv
 /MTG_Dips_202*
 /market_symbols.csv
 /mtg_cache/
 /TCGplayer_Import_202*.txt
 /wordclouds/
 /__pycache__/
-/yt_visuals/
-/yt_stats_daily/
+/yt_output/
 /yt_channel_config.yaml
-/yt_video_stats/
 /mtg_scanner_cache/
+/nyse_output/
