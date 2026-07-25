@@ -42,7 +42,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 
 
-<img src="git_output/commits_per_date.png" alt="Git activity over last 30 days" width="400"/> <img src="images/sonic_the_hedgehog_2020_wordcloud.png" alt="Rotten Tomatoes word cloud (Sonic the Hedgehog 2020)" width="400"/>
+<img src="images/commits_per_date.png" alt="Git activity over last 30 days" width="400"/> <img src="images/sonic_the_hedgehog_2020_wordcloud.png" alt="Rotten Tomatoes word cloud (Sonic the Hedgehog 2020)" width="400"/>
 
 
 
