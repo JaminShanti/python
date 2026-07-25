@@ -39,23 +39,28 @@ class MTGDeckScanner:
             "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"
         ]
 
-        # Load Configuration from external YAML file in the cache dir
-        self.commander_urls = self._load_config_urls()
-
-        # Load Exclusions and Caches
+        # Load Configuration, Exclusions, Game Changers, and Caches
+        self.commander_targets = self._load_config_urls()
         self.excluded_cards = self._load_exclusions()
+        self.game_changers = self._fetch_game_changers()
         self.topdeck_cache = self._load_cache(self.urls_cache_file)
         self.deck_cache = self._load_cache(self.deck_cache_file)
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
 
     def _load_config_urls(self):
-        """Loads target deck urls from the configuration yaml file inside the cache dir."""
+        """Loads target deck urls and brackets from the configuration yaml file."""
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
                     config_data = yaml.safe_load(f)
                     if config_data and "commander_urls" in config_data:
-                        return config_data["commander_urls"]
+                        targets = []
+                        for item in config_data["commander_urls"]:
+                            if isinstance(item, dict):
+                                targets.append(item)
+                            else:
+                                targets.append({"url": item, "bracket": None})
+                        return targets
             except Exception as e:
                 print(f"Error parsing configuration file {self.config_file}: {e}")
 
@@ -79,6 +84,44 @@ class MTGDeckScanner:
             return exclusions
         print(f"Warning: {self.excluded_file} not found. No exclusions applied.")
         return exclusions
+
+    def _fetch_game_changers(self):
+        """Fetches the Commander Game Changer list directly from Scryfall API and caches it."""
+        gc_cache_file = os.path.join(self.cache_dir, "scryfall_game_changers.pkl")
+
+        if os.path.exists(gc_cache_file):
+            if time.time() - os.path.getmtime(gc_cache_file) < 7 * 86400:
+                return self._load_cache(gc_cache_file)
+
+        print("Fetching latest Game Changers list from Scryfall API...")
+        gc_list = set()
+        url = "https://api.scryfall.com/cards/search?q=is:gamechanger"
+
+        try:
+            while url:
+                time.sleep(0.1)
+                response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
+                if response.status_code == 200:
+                    data = response.json()
+                    for card in data.get("data", []):
+                        gc_list.add(card["name"].lower())
+                    if data.get("has_more"):
+                        url = data.get("next_page")
+                    else:
+                        break
+                else:
+                    break
+
+            if gc_list:
+                self._save_cache(gc_list, gc_cache_file)
+                return gc_list
+
+        except Exception:
+            pass
+
+        if os.path.exists(gc_cache_file):
+            return self._load_cache(gc_cache_file)
+        return set()
 
     def _load_cache(self, filepath):
         """Helper to load a pickle cache."""
@@ -187,9 +230,18 @@ class MTGDeckScanner:
             return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
 
     def get_scryfall_data(self, card_name):
-        """Fetches clean layout data and commander legality from Scryfall."""
+        """Fetches clean layout data, commander legality, and Game Changer status from Scryfall."""
         if card_name in self.scryfall_cache:
-            return self.scryfall_cache[card_name]
+            cached_data = self.scryfall_cache[card_name]
+
+            # Auto-upgrade legacy 3-item tuples to include the Game Changer boolean
+            if len(cached_data) == 3:
+                real_name, type_line, is_legal = cached_data
+                is_gc = real_name.lower() in self.game_changers or card_name.lower() in self.game_changers
+                cached_data = (real_name, type_line, is_legal, is_gc)
+                self.scryfall_cache[card_name] = cached_data
+                self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
+            return cached_data
 
         time.sleep(0.1)  # Polite API rate limit
         url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
@@ -210,14 +262,18 @@ class MTGDeckScanner:
                 if "Sticker" in type_line or "Attraction" in type_line:
                     is_legal = False
 
-                result = (res_data.get("name", card_name), type_line, is_legal)
+                real_name = res_data.get("name", card_name)
+                is_gc = real_name.lower() in self.game_changers or card_name.lower() in self.game_changers
+
+                result = (real_name, type_line, is_legal, is_gc)
                 self.scryfall_cache[card_name] = result
                 self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
                 return result
         except Exception:
             pass
 
-        result = (card_name, "", True)
+        is_gc = card_name.lower() in self.game_changers
+        result = (card_name, "", True, is_gc)
         self.scryfall_cache[card_name] = result
         self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
         return result
@@ -231,14 +287,15 @@ class MTGDeckScanner:
             "Artifact"
         )
 
-    def analyze_commander(self, page, commander_url):
+    def analyze_commander(self, page, commander_url, bracket=None):
         """Main operational consensus logic for a single commander."""
         name_match = re.search(r"commander/([^?]+)", commander_url)
         commander_name = (
             unquote(name_match.group(1)) if name_match else "Unknown Commander"
         )
 
-        print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}\n{'=' * 60}")
+        bracket_text = f" (Bracket {bracket})" if bracket else " (Uncapped)"
+        print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}{bracket_text}\n{'=' * 60}")
 
         urls = self.get_topdeck_urls(page, commander_url)
         if not urls:
@@ -325,7 +382,19 @@ class MTGDeckScanner:
                 avg_basics[land.capitalize()] = avg
                 total_avg_basics += avg
 
+        # Determine Game Changer Limits based on bracket
+        if str(bracket) in ['1', '2']:
+            max_gc = 0
+        elif str(bracket) == '3':
+            max_gc = 3
+        else:
+            max_gc = 100
+
         valid_cards = []
+        gc_count = 0
+
+        # THIS IS THE ONLY PART OF THE DECK BUILDING LOGIC THAT CHANGED
+        # (Filtering GC's out of the consensus pool before slicing it)
         for card, count in card_counter.most_common():
             if (card in self.ui_noise
                     or card.lower() == commander_name.lower()
@@ -333,9 +402,17 @@ class MTGDeckScanner:
                 continue
             if (count / valid_deck_count) >= self.min_percentage:
                 scry_data = self.get_scryfall_data(card)
-                if scry_data[2]:
+                is_legal, is_gc = scry_data[2], scry_data[3]
+
+                if is_legal:
+                    if is_gc:
+                        if gc_count >= max_gc:
+                            print(f"   -> Bracket {bracket} Game Changer cap reached. Excluded '{card}'.")
+                            continue
+                        gc_count += 1
                     valid_cards.append(card)
 
+        # EXACT ORIGINAL LAND LOGIC RESUMES HERE
         max_non_basics = 99 - total_avg_basics
         high_consensus_pool = valid_cards[:max_non_basics]
 
@@ -494,7 +571,7 @@ class MTGDeckScanner:
 
     def run(self):
         """Entry point to launch the browser and process target URLs."""
-        if not self.commander_urls:
+        if not self.commander_targets:
             print(f"No URLs configured to scrape. Ensure your configuration file exists at: {self.config_file}")
             return
 
@@ -502,8 +579,8 @@ class MTGDeckScanner:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
-            for url in self.commander_urls:
-                self.analyze_commander(page, url)
+            for target in self.commander_targets:
+                self.analyze_commander(page, target["url"], target.get("bracket"))
 
             browser.close()
 
