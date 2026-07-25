@@ -9,18 +9,25 @@ from typing import Optional
 import plotly.io as pio
 
 # Set default renderer to kaleido
-pio.renderers.default = "kaleido"
+# Attempt to set Kaleido as the default renderer; ignore if not available
+try:
+    pio.renderers.default = "kaleido"
+except Exception:
+    # Fallback to the default Plotly renderer
+    pass
 
 class CoronaMapper:
     """
     A class to generate a choropleth map of COVID-19 deaths by county in the US.
     """
-    def __init__(self, date: str = "07-19-2020", output_dir: str = "corona_output", data_dir: str = "corona_data"):
+    def __init__(self, date: str = "07-19-2020", output_dir: str = None, data_dir: str = None):
         self.setup_logger()
         self.date = date
-        self.output_dir = output_dir
-        self.data_dir = data_dir # New data directory for input files
-        
+        # Determine base cache directory (environment variable or script location)
+        base_cache = os.getenv("CACHE_ROOT", os.path.abspath(os.path.dirname(__file__)))
+        # Use provided dirs or default to subfolders within the cache root
+        self.output_dir = output_dir or os.path.join(base_cache, "corona_output")
+        self.data_dir = data_dir or os.path.join(base_cache, "corona_data")
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.data_dir, exist_ok=True)
         self.logger.info(f"Output directory set to: {self.output_dir}")

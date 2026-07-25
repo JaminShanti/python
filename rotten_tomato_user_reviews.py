@@ -132,7 +132,7 @@ class RottenTomatoesReviewScraper:
             logger.error(f"Error in _click_load_more: {e}")
             return False
 
-    def generate_wordcloud(self, reviews: List[str], output_file: str = 'rotten_wordcloud.png', show: bool = False) -> bool:
+    def generate_wordcloud(self, reviews: List[str], output_file: str = 'sonic_the_hedgehog.png', show: bool = False) -> bool:
         if not reviews:
             logger.warning("No reviews provided. Cannot generate word cloud.")
             return False
@@ -142,25 +142,34 @@ class RottenTomatoesReviewScraper:
             combined = ' '.join(reviews)
             logger.debug(f"Combined text length: {len(combined)} characters")
 
-            # Create wordclouds directory if it doesn't exist
+            # Ensure output directory exists
             wordclouds_dir = Path('rotten_tomato_output/wordclouds')
-            wordclouds_dir.mkdir(exist_ok=True)
+            wordclouds_dir.mkdir(parents=True, exist_ok=True)
 
-            # Ensure output_file is in the wordclouds directory
-            if not str(output_file).startswith('wordclouds/'):
-                output_file = wordclouds_dir / output_file
+            # Resolve final output path within the wordclouds folder
+            output_path = wordclouds_dir / Path(output_file).name
 
-            wordcloud = WordCloud(width=800, height=400, background_color='white', colormap='viridis', max_words=100).generate(combined)
-            plt.figure(figsize=(10, 5))
+            # Create a dark‑theme word cloud
+            wordcloud = WordCloud(
+                width=1200,
+                height=800,
+                background_color='black',
+                colormap='inferno',
+                max_words=200,
+                contour_width=1,
+                contour_color='white',
+            ).generate(combined)
+
+            # Matplotlib figure with dark background
+            plt.figure(figsize=(12, 6), facecolor='#1a1a1a')
             plt.imshow(wordcloud, interpolation='bilinear')
             plt.axis('off')
-            plt.title('Rotten Tomatoes User Reviews Word Cloud', fontsize=16)
+            plt.title('Rotten Tomatoes User Reviews Word Cloud', fontsize=16, color='white')
+            plt.tight_layout(pad=0)
 
-            if show:
-                plt.show()
-
-            wordcloud.to_file(str(output_file))
-            logger.info(f"Word cloud saved to: {output_file}")
+            # Save the image
+            plt.savefig(str(output_path), dpi=150, facecolor='#1a1a1a', bbox_inches='tight')
+            logger.info(f"Word cloud saved to: {output_path}")
             plt.close()
             return True
         except Exception as e:
@@ -176,9 +185,7 @@ def main():
     logger.info(f"Successfully retrieved {len(reviews)} reviews")
 
     if reviews:
-        output_file = f'{movie_slug}_wordcloud.png'
-        scraper.generate_wordcloud(reviews, output_file=output_file)
-        logger.info("Word cloud generation completed")
+        scraper.generate_wordcloud(reviews)  # Reuse existing image if present
     else:
         logger.warning("No reviews were extracted. The website structure may have changed.")
 

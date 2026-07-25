@@ -36,6 +36,18 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 * **`Git_Log_Report.py`**: Analyzes a Git repository's history to generate reports on commit activity, authors, and file changes.
 * **`Corona_Mapping.py`**: Visualizes COVID-19 data, likely creating choropleth maps (e.g., `covid_choropleth_*.html`) to show spread or impact by region.
 
+### Example Outputs
+
+<img src="images/83070736_10220813550066840_1627724051114455439_n.jpg" alt="Corona mapping image" width="400"/> <img src="images/yt_growth_2026-05-16.png" alt="YouTube growth chart" width="400"/>
+
+
+
+<img src="git_output/commits_per_date.png" alt="Git activity over last 30 days" width="400"/> <img src="images/sonic_the_hedgehog_2020_wordcloud.png" alt="Rotten Tomatoes word cloud (Sonic the Hedgehog 2020)" width="400"/>
+
+
+
+
+
 ### Market Monitoring & Hobby Projects
 
 * **`mtg-dip-detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements, particularly useful for monitoring Reserved List assets.

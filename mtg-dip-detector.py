@@ -1,6 +1,9 @@
 import gzip, json, logging, os, pickle, re
 from datetime import datetime, timedelta
 import numpy as np, pandas as pd, requests
+import warnings
+from requests.exceptions import RequestsDependencyWarning
+warnings.filterwarnings("ignore", category=RequestsDependencyWarning)
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
@@ -102,22 +105,32 @@ class MTGDipDetector:
         logger.info(f"TCGplayer import saved: {fname}")
 
     def generate_pdf(self, df):
-        if not HAS_MATPLOTLIB: return
+        if not HAS_MATPLOTLIB:
+            return
+        # Timestamp for filenames
         ts = datetime.now().strftime('%Y-%m-%d_%H-%M')
-        pdf_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.pdf") # Save to output_dir
-        png_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.png") # Save to output_dir
+        pdf_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.pdf")
+        png_f = os.path.join(self.output_dir, f"MTG_Dips_{ts}.png")
 
+        # Table layout calculations
         row_h, head_h, title_h, foot_h = 0.35, 0.4, 0.15, 0.05
         total_h = (len(df) * row_h) + head_h + title_h + foot_h
 
-        fig, ax = plt.subplots(figsize=(15, total_h), facecolor='#1a1a1a')
+        # Use a dark background and modern font
+        plt.style.use('dark_background')
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.size'] = 11
+
+        fig, ax = plt.subplots(figsize=(12, total_h), facecolor='#1a1a1a')
         ax.axis('off')
 
+        # Prepare dataframe for display
         pdf_df = df.copy()
         pdf_df['Price'] = pdf_df['Price'].map('${:,.2f}'.format)
         pdf_df['High Ref'] = pdf_df['High Ref'].map('${:,.2f}'.format)
         pdf_df['Dip %'] = pdf_df['Dip %'].map('{:.1f}%'.format)
 
+        # Title and footer
         plt.suptitle(
             "MTG GLOBAL & STAPLE DIPS (TCGplayer Market Data)",
             fontsize=26, fontweight='bold', color='#ffffff', y=0.985
@@ -127,17 +140,22 @@ class MTGDipDetector:
             ha='center', fontsize=14, color='#aaaaaa'
         )
 
+        # Table positioning
         t_bot = foot_h / total_h
         t_height = (total_h - title_h - foot_h) / total_h
         table = ax.table(
-            cellText=pdf_df.values, colLabels=pdf_df.columns, cellLoc='center',
-            loc='center', bbox=[0, t_bot, 1, t_height]
+            cellText=pdf_df.values,
+            colLabels=pdf_df.columns,
+            cellLoc='center',
+            loc='center',
+            bbox=[0, t_bot, 1, t_height]
         )
 
         table.auto_set_font_size(False)
         table.set_fontsize(11)
         table.auto_set_column_width(col=list(range(len(pdf_df.columns))))
 
+        # Cell styling
         for (r, c), cell in table.get_celld().items():
             cell.set_edgecolor('#333333')
             if r == 0:
@@ -151,14 +169,18 @@ class MTGDipDetector:
             if c == pdf_df.columns.get_loc('Card Name'):
                 cell.set_text_props(ha='left')
 
+        # Footer note
         fig.text(
             0.5, 0.01, "Data: MTGJSON, EDHREC, EDHTOP16", ha='center',
             fontsize=10, color='#666666', style='italic'
         )
 
+        # Save options – high‑resolution PNG and PDF with tight bounding box
         save_kwargs = {
-            'bbox_inches': 'tight', 'pad_inches': 0.02,
-            'facecolor': '#1a1a1a', 'dpi': 300
+            'bbox_inches': 'tight',
+            'pad_inches': 0.02,
+            'facecolor': '#1a1a1a',
+            'dpi': 300,
         }
         with PdfPages(pdf_f) as pdf:
             pdf.savefig(fig, **save_kwargs)

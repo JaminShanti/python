@@ -5,9 +5,11 @@ from playwright.sync_api import sync_playwright
 
 
 class MTGDeckScanner:
-    def __init__(self, cache_dir="mtg_scanner_cache", config_filename="mtg_scanner_config.yaml", min_percentage=0.20):
+    def __init__(self, cache_dir=None, config_filename="mtg_scanner_config.yaml", min_percentage=0.20):
         # Configuration
-        self.cache_dir = cache_dir
+        # Determine base cache directory (environment variable or script location)
+        base_cache = os.getenv("CACHE_ROOT", os.path.abspath(os.path.dirname(__file__)))
+        self.cache_dir = cache_dir or os.path.join(base_cache, "mtg_scanner_cache")
         self.min_percentage = min_percentage
 
         # Ensure the directory exists before we try to look for or save anything in it
