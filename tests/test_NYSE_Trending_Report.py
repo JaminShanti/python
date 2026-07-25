@@ -5,7 +5,7 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 spec = importlib.util.spec_from_file_location(
-    "NYSE_Trending_Report", repo_root / "NYSE Trending Report.py"
+    "NYSE_Trending_Report",    repo_root / "nyse_trending_report.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
