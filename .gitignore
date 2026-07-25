@@ -1,11 +1,9 @@
-/dividend_report*
-/MTG_Dips_202*
-/market_symbols.csv
 /mtg_cache/
-/TCGplayer_Import_202*.txt
-/wordclouds/
+/rotten_tomato_output/wordclouds/
 /__pycache__/
 /yt_output/
-/yt_channel_config.yaml
 /mtg_scanner_cache/
 /nyse_output/
+/corona_output/
+/git_output/
+/yt_cache/

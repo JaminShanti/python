@@ -143,7 +143,7 @@ class RottenTomatoesReviewScraper:
             logger.debug(f"Combined text length: {len(combined)} characters")
 
             # Create wordclouds directory if it doesn't exist
-            wordclouds_dir = Path('wordclouds')
+            wordclouds_dir = Path('rotten_tomato_output/wordclouds')
             wordclouds_dir.mkdir(exist_ok=True)
 
             # Ensure output_file is in the wordclouds directory
