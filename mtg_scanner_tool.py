@@ -296,7 +296,7 @@ class MTGDeckScanner:
             unquote(name_match.group(1)) if name_match else "Unknown Commander"
         )
 
-        bracket_text = f" (Bracket {bracket})" if bracket else " (Uncapped)"
+        bracket_text = f" (Bracket {bracket})" if bracket else ""
         print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}{bracket_text}\n{'=' * 60}")
 
         urls = self.get_topdeck_urls(page, commander_url)
@@ -392,31 +392,49 @@ class MTGDeckScanner:
         else:
             max_gc = 100
 
-        valid_cards = []
-        gc_count = 0
+        # === THE TWO-BUCKET FIX ===
+        target_total_lands = dynamic_min_lands
+        target_non_basics = max(0, target_total_lands - total_avg_basics)
+        target_spells = 99 - target_total_lands
 
-        # THIS IS THE ONLY PART OF THE DECK BUILDING LOGIC THAT CHANGED
-        # (Filtering GC's out of the consensus pool before slicing it)
+        high_consensus_pool = []
+        gc_count = 0
+        added_non_basics = 0
+        added_spells = 0
+
         for card, count in card_counter.most_common():
             if (card in self.ui_noise
                     or card.lower() == commander_name.lower()
                     or card.lower() in self.excluded_cards):
                 continue
+
             if (count / valid_deck_count) >= self.min_percentage:
                 scry_data = self.get_scryfall_data(card)
                 is_legal, is_gc = scry_data[2], scry_data[3]
 
                 if is_legal:
-                    if is_gc:
-                        if gc_count >= max_gc:
-                            print(f"   -> Bracket {bracket} Game Changer cap reached. Excluded '{card}'.")
-                            continue
-                        gc_count += 1
-                    valid_cards.append(card)
+                    # Enforce the Game Changer cap
+                    if is_gc and gc_count >= max_gc:
+                        print(f"   -> Bracket {bracket} Game Changer cap reached. Excluded '{card}'.")
+                        continue
 
-        # EXACT ORIGINAL LAND LOGIC RESUMES HERE
-        max_non_basics = 99 - total_avg_basics
-        high_consensus_pool = valid_cards[:max_non_basics]
+                    cat = self.categorize_card(scry_data[1])
+
+                    # Fill buckets accurately to prevent land overshoot
+                    if cat == "Land":
+                        if added_non_basics < target_non_basics:
+                            high_consensus_pool.append(card)
+                            added_non_basics += 1
+                            if is_gc: gc_count += 1
+                    else:
+                        if added_spells < target_spells:
+                            high_consensus_pool.append(card)
+                            added_spells += 1
+                            if is_gc: gc_count += 1
+
+            # Stop parsing once both allocations are exactly met
+            if added_non_basics >= target_non_basics and added_spells >= target_spells:
+                break
 
         deck_list = {t: [] for t in self.type_order}
         deck_list["Commander"] = [f"1 {commander_name}"]
@@ -450,6 +468,23 @@ class MTGDeckScanner:
                         f"   -> Cut '{card}' (Instant) to meet "
                         f"maximum cap of {dynamic_max_instants}."
                     )
+
+            # Silent refill: Replace cut instants with the next best spells so slots don't convert to basic lands
+            refill_needed = cards_removed
+            for card, count in card_counter.most_common():
+                if refill_needed == 0: break
+                if card in self.ui_noise or card.lower() == commander_name.lower() or card.lower() in self.excluded_cards:
+                    continue
+                if card not in high_consensus_pool:
+                    scry_data = self.get_scryfall_data(card)
+                    cat = self.categorize_card(scry_data[1])
+                    if scry_data[2] and cat not in ["Land", "Instant"]:
+                        if scry_data[3] and gc_count >= max_gc: continue
+                        deck_list[cat].append(f"1 {scry_data[0]}")
+                        high_consensus_pool.append(card)
+                        current_count += 1
+                        refill_needed -= 1
+                        if scry_data[3]: gc_count += 1
 
         # --- MINIMUM INSTANT SAFETY NET ---
         current_instants = len(deck_list["Instant"])
