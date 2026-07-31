@@ -7,22 +7,18 @@ from playwright.sync_api import sync_playwright
 class MTGDeckScanner:
     def __init__(self, cache_dir=None, config_filename="mtg_scanner_config.yaml", min_percentage=0.20):
         # Configuration
-        # Determine base cache directory (environment variable or script location)
         base_cache = os.getenv("CACHE_ROOT", os.path.abspath(os.path.dirname(__file__)))
         self.cache_dir = cache_dir or os.path.join(base_cache, "mtg_scanner_cache")
         self.min_percentage = min_percentage
 
-        # Ensure the directory exists before we try to look for or save anything in it
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        # File Paths (All neatly tucked into the cache_dir)
         self.config_file = os.path.join(self.cache_dir, config_filename)
         self.urls_cache_file = os.path.join(self.cache_dir, "topdeck_urls_cache.pkl")
         self.scryfall_cache_file = os.path.join(self.cache_dir, "scryfall_data.pkl")
         self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
         self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
 
-        # Categorization Rules (MDFCs prioritize Lands)
         self.type_order = [
             "Commander", "Creature", "Artifact", "Enchantment",
             "Instant", "Sorcery", "Planeswalker", "Land"
@@ -32,16 +28,11 @@ class MTGDeckScanner:
             "Instant", "Sorcery", "Planeswalker"
         )
 
-        # Noise filters to clean data
         self.ui_noise = [
-            "Mountain", "Forest", "Plains", "Island", "Swamp",
-            "Snow-Covered Mountain", "Snow-Covered Forest",
-            "Snow-Covered Plains", "Snow-Covered Island",
-            "Snow-Covered Swamp", "Artifact", "Creature",
-            "Instant", "Sorcery", "Enchantment", "Land", "Planeswalker"
+            "Artifact", "Creature", "Instant", "Sorcery",
+            "Enchantment", "Land", "Planeswalker"
         ]
 
-        # Load Configuration, Exclusions, Game Changers, and Caches
         self.commander_targets = self._load_config_urls()
         self.excluded_cards = self._load_exclusions()
         self.game_changers = self._fetch_game_changers()
@@ -50,7 +41,6 @@ class MTGDeckScanner:
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
 
     def _load_config_urls(self):
-        """Loads target deck urls and brackets from the configuration yaml file."""
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
@@ -70,7 +60,6 @@ class MTGDeckScanner:
         return []
 
     def _load_exclusions(self):
-        """Loads user-defined card exclusions and replacements."""
         exclusions = {}
         if os.path.exists(self.excluded_file):
             with open(self.excluded_file, 'r') as f:
@@ -84,11 +73,9 @@ class MTGDeckScanner:
                     else:
                         exclusions[line.lower()] = None
             return exclusions
-        print(f"Warning: {self.excluded_file} not found. No exclusions applied.")
         return exclusions
 
     def _fetch_game_changers(self):
-        """Fetches the Commander Game Changer list directly from Scryfall API and caches it."""
         gc_cache_file = os.path.join(self.cache_dir, "scryfall_game_changers.pkl")
 
         if os.path.exists(gc_cache_file):
@@ -117,7 +104,6 @@ class MTGDeckScanner:
             if gc_list:
                 self._save_cache(gc_list, gc_cache_file)
                 return gc_list
-
         except Exception:
             pass
 
@@ -126,19 +112,16 @@ class MTGDeckScanner:
         return set()
 
     def _load_cache(self, filepath):
-        """Helper to load a pickle cache."""
         if os.path.exists(filepath):
             with open(filepath, 'rb') as f:
                 return pickle.load(f)
         return {}
 
     def _save_cache(self, cache_dict, filepath):
-        """Helper to save a pickle cache."""
         with open(filepath, 'wb') as f:
             pickle.dump(cache_dict, f)
 
     def auto_scroll_to_bottom(self, page):
-        """Scrolls to the bottom until the page stops loading content."""
         last_height = page.evaluate("document.body.scrollHeight")
         while True:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -149,7 +132,6 @@ class MTGDeckScanner:
             last_height = new_height
 
     def get_topdeck_urls(self, page, commander_url, force_refresh=False):
-        """Fetches and caches individual decklist URLs from a commander page."""
         if commander_url in self.topdeck_cache and not force_refresh:
             return self.topdeck_cache[commander_url]
 
@@ -166,7 +148,6 @@ class MTGDeckScanner:
         return urls
 
     def scrape_deck_data(self, page, url):
-        """Scrapes and caches the card list and basic lands from a decklist."""
         if url in self.deck_cache:
             return self.deck_cache[url]
 
@@ -176,8 +157,8 @@ class MTGDeckScanner:
 
             data = page.evaluate('''() => {
                 let found = new Set();
-                let basicCounts = { 
-                    mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0 
+                let basicCounts = {
+                    mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0, wastes: 0
                 };
                 const cleanName = (name) => name.replace(/^\\s*\\d+x?\\s+/i, '').trim();
 
@@ -187,10 +168,10 @@ class MTGDeckScanner:
 
                     let lowerName = name.toLowerCase();
                     let basicTypes = [
-                        "mountain", "forest", "plains", "island", "swamp", 
-                        "snow-covered mountain", "snow-covered forest", 
-                        "snow-covered plains", "snow-covered island", 
-                        "snow-covered swamp"
+                        "mountain", "forest", "plains", "island", "swamp", "wastes",
+                        "snow-covered mountain", "snow-covered forest",
+                        "snow-covered plains", "snow-covered island",
+                        "snow-covered swamp", "snow-covered wastes"
                     ];
 
                     if (basicTypes.includes(lowerName)) {
@@ -203,6 +184,7 @@ class MTGDeckScanner:
                         else if (lowerName.includes("plains")) basicCounts.plains += count;
                         else if (lowerName.includes("island")) basicCounts.island += count;
                         else if (lowerName.includes("swamp")) basicCounts.swamp += count;
+                        else if (lowerName.includes("wastes")) basicCounts.wastes += count;
                     } else {
                         found.add(cleanName(name));
                     }
@@ -229,14 +211,11 @@ class MTGDeckScanner:
 
         except Exception as e:
             print(f"Error reading {url}: {e}")
-            return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0}
+            return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0, "wastes": 0}
 
     def get_scryfall_data(self, card_name):
-        """Fetches clean layout data, commander legality, and Game Changer status from Scryfall."""
         if card_name in self.scryfall_cache:
             cached_data = self.scryfall_cache[card_name]
-
-            # Auto-upgrade legacy 3-item tuples to include the Game Changer boolean
             if len(cached_data) == 3:
                 real_name, type_line, is_legal = cached_data
                 is_gc = real_name.lower() in self.game_changers or card_name.lower() in self.game_changers
@@ -245,7 +224,7 @@ class MTGDeckScanner:
                 self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
             return cached_data
 
-        time.sleep(0.1)  # Polite API rate limit
+        time.sleep(0.1)
         url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
         try:
             response = requests.get(
@@ -260,7 +239,6 @@ class MTGDeckScanner:
                 legalities = res_data.get("legalities", {})
                 is_legal = legalities.get("commander") == "legal"
 
-                # Side-deck elements filter
                 if "Sticker" in type_line or "Attraction" in type_line:
                     is_legal = False
 
@@ -281,7 +259,6 @@ class MTGDeckScanner:
         return result
 
     def categorize_card(self, type_line):
-        """Sorts card types based on the predefined hierarchy."""
         if not type_line:
             return "Creature"
         return next(
@@ -290,7 +267,6 @@ class MTGDeckScanner:
         )
 
     def analyze_commander(self, page, commander_url, bracket=None):
-        """Main operational consensus logic for a single commander."""
         name_match = re.search(r"commander/([^?]+)", commander_url)
         commander_name = (
             unquote(name_match.group(1)) if name_match else "Unknown Commander"
@@ -309,7 +285,7 @@ class MTGDeckScanner:
         raw_card_counter = Counter()
         card_counter = Counter()
         total_basics = {
-            "mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0
+            "mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0, "wastes": 0
         }
         valid_deck_count = 0
 
@@ -345,6 +321,14 @@ class MTGDeckScanner:
         total_lands_all_decks = sum(total_basics.values())
         total_instants_all_decks = 0
 
+        total_fetchable_targets = {
+            "Plains": 0, "Island": 0, "Swamp": 0, "Mountain": 0, "Forest": 0
+        }
+
+        for land, total in total_basics.items():
+            if land.capitalize() in total_fetchable_targets:
+                total_fetchable_targets[land.capitalize()] += total
+
         raw_unique_cards = [
             card for card in raw_card_counter.keys()
             if card not in self.ui_noise and card.lower() != commander_name.lower()
@@ -362,6 +346,11 @@ class MTGDeckScanner:
             cat = self.categorize_card(type_line)
             if cat == "Land":
                 total_lands_all_decks += raw_card_counter[card]
+
+                for land_type in total_fetchable_targets.keys():
+                    if re.search(rf'\b{land_type}\b', type_line, re.IGNORECASE):
+                        total_fetchable_targets[land_type] += raw_card_counter[card]
+
             elif cat == "Instant":
                 total_instants_all_decks += raw_card_counter[card]
 
@@ -384,7 +373,14 @@ class MTGDeckScanner:
                 avg_basics[land.capitalize()] = avg
                 total_avg_basics += avg
 
-        # Determine Game Changer Limits based on bracket
+        avg_fetchable = {}
+        for land_type, total in total_fetchable_targets.items():
+            avg = round(total / valid_deck_count)
+            if avg > 0:
+                avg_fetchable[land_type] = avg
+
+        print(f"Targeting Average Fetchable Subtypes: {avg_fetchable}")
+
         if str(bracket) in ['1', '2']:
             max_gc = 0
         elif str(bracket) == '3':
@@ -392,7 +388,6 @@ class MTGDeckScanner:
         else:
             max_gc = 100
 
-        # === THE TWO-BUCKET FIX ===
         target_total_lands = dynamic_min_lands
         target_non_basics = max(0, target_total_lands - total_avg_basics)
         target_spells = 99 - target_total_lands
@@ -413,14 +408,12 @@ class MTGDeckScanner:
                 is_legal, is_gc = scry_data[2], scry_data[3]
 
                 if is_legal:
-                    # Enforce the Game Changer cap
                     if is_gc and gc_count >= max_gc:
                         print(f"   -> Bracket {bracket} Game Changer cap reached. Excluded '{card}'.")
                         continue
 
                     cat = self.categorize_card(scry_data[1])
 
-                    # Fill buckets accurately to prevent land overshoot
                     if cat == "Land":
                         if added_non_basics < target_non_basics:
                             high_consensus_pool.append(card)
@@ -432,7 +425,6 @@ class MTGDeckScanner:
                             added_spells += 1
                             if is_gc: gc_count += 1
 
-            # Stop parsing once both allocations are exactly met
             if added_non_basics >= target_non_basics and added_spells >= target_spells:
                 break
 
@@ -447,7 +439,6 @@ class MTGDeckScanner:
             deck_list[category].append(f"1 {real_name}")
             current_count += 1
 
-        # --- MAXIMUM INSTANT CAP ---
         current_instants = len(deck_list["Instant"])
         if current_instants > dynamic_max_instants:
             to_cut = current_instants - dynamic_max_instants
@@ -464,12 +455,8 @@ class MTGDeckScanner:
                     deck_list["Instant"].remove(matched_item)
                     current_count -= 1
                     cards_removed += 1
-                    print(
-                        f"   -> Cut '{card}' (Instant) to meet "
-                        f"maximum cap of {dynamic_max_instants}."
-                    )
+                    print(f"   -> Cut '{card}' (Instant) to meet maximum cap of {dynamic_max_instants}.")
 
-            # Silent refill: Replace cut instants with the next best spells so slots don't convert to basic lands
             refill_needed = cards_removed
             for card, count in card_counter.most_common():
                 if refill_needed == 0: break
@@ -486,11 +473,9 @@ class MTGDeckScanner:
                         refill_needed -= 1
                         if scry_data[3]: gc_count += 1
 
-        # --- MINIMUM INSTANT SAFETY NET ---
         current_instants = len(deck_list["Instant"])
         if current_instants < dynamic_min_instants:
             instant_deficit = dynamic_min_instants - current_instants
-
             next_best_instants = []
             for card, count in card_counter.most_common():
                 if (card in self.ui_noise
@@ -500,7 +485,6 @@ class MTGDeckScanner:
                 if card not in high_consensus_pool:
                     scry_data = self.get_scryfall_data(card)
                     type_line, is_legal = scry_data[1], scry_data[2]
-
                     if is_legal and self.categorize_card(type_line) == "Instant":
                         next_best_instants.append(card)
                         if len(next_best_instants) == instant_deficit:
@@ -534,22 +518,17 @@ class MTGDeckScanner:
                 current_count += 1
                 print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
 
-        # --- MINIMUM LAND SAFETY NET ---
         current_lands = len(deck_list["Land"])
         slots_remaining = 100 - current_count
-
         if (current_lands + slots_remaining) < dynamic_min_lands:
             deficit = dynamic_min_lands - (current_lands + slots_remaining)
-
             cards_removed = 0
             for card in reversed(high_consensus_pool):
                 if cards_removed >= deficit:
                     break
-
                 for category in self.type_order:
                     if category in ["Land", "Commander", "Instant"]:
                         continue
-
                     matched_item = next(
                         (item for item in deck_list[category]
                          if item.endswith(f" {card}")), None
@@ -562,14 +541,69 @@ class MTGDeckScanner:
                         print(f"   -> Cut '{card}' for required average Lands.")
                         break
 
-        # --- BASIC LAND INJECTION ---
+        # --- FIXED FETCHABLE TARGET SAFETY NET (BASICS ONLY, PROTECTS FETCHES) ---
+        current_fetchables = {"Plains": 0, "Island": 0, "Swamp": 0, "Mountain": 0, "Forest": 0}
+
+        for land_entry in deck_list["Land"]:
+            parts = land_entry.split(' ', 1)
+            count = int(parts[0])
+            land_name = parts[1]
+
+            scry_data = self.get_scryfall_data(land_name)
+            type_line = scry_data[1]
+
+            for ft in current_fetchables.keys():
+                if re.search(rf'\b{ft}\b', type_line, re.IGNORECASE):
+                    current_fetchables[ft] += count
+
+        deficits = {k: v - current_fetchables.get(k, 0) for k, v in avg_fetchable.items() if v > current_fetchables.get(k, 0)}
+
+        if deficits:
+            replaceable_lands = []
+            for land_entry in deck_list["Land"]:
+                parts = land_entry.split(' ', 1)
+                count = int(parts[0])
+                land_name = parts[1]
+                scry_data = self.get_scryfall_data(land_name)
+                # Protect fetch lands, duals, shocks, and existing basics from being cut
+                if not any(re.search(rf'\b{ft}\b', scry_data[1], re.IGNORECASE) for ft in current_fetchables.keys()):
+                    for _ in range(count):
+                        replaceable_lands.append(land_entry)
+
+            replaceable_lands.reverse()
+
+            for ft, def_val in list(deficits.items()):
+                while def_val > 0 and replaceable_lands:
+                    to_cut = replaceable_lands.pop(0)
+                    for i, entry in enumerate(deck_list["Land"]):
+                        if entry == to_cut:
+                            old_count = int(entry.split(' ', 1)[0])
+                            if old_count > 1:
+                                deck_list["Land"][i] = f"{old_count - 1} {to_cut.split(' ', 1)[1]}"
+                            else:
+                                deck_list["Land"].pop(i)
+                            break
+
+                    basic_added = False
+                    for i, entry in enumerate(deck_list["Land"]):
+                        if entry.endswith(f" {ft}"):
+                            old_count = int(entry.split(' ', 1)[0])
+                            deck_list["Land"][i] = f"{old_count + 1} {ft}"
+                            basic_added = True
+                            break
+                    if not basic_added:
+                        deck_list["Land"].append(f"1 {ft}")
+
+                    print(f"   -> Cut '{to_cut.split(' ', 1)[1]}' (Utility Land) for Basic '{ft}' to meet fetchable subtype targets.")
+                    def_val -= 1
+
         sorted_basics = sorted(
             total_basics.items(), key=lambda x: x[1], reverse=True
         )
         basic_types_to_use = [k.capitalize() for k, v in sorted_basics if v > 0]
 
         if not basic_types_to_use:
-            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains"]
+            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"]
 
         for basic_name in basic_types_to_use:
             if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
@@ -607,7 +641,6 @@ class MTGDeckScanner:
                     print(card_entry)
 
     def run(self):
-        """Entry point to launch the browser and process target URLs."""
         if not self.commander_targets:
             print(f"No URLs configured to scrape. Ensure your configuration file exists at: {self.config_file}")
             return
