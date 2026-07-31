@@ -436,7 +436,13 @@ class MTGDeckScanner:
             scry_data = self.get_scryfall_data(card)
             real_name, type_line = scry_data[0], scry_data[1]
             category = self.categorize_card(type_line)
-            deck_list[category].append(f"1 {real_name}")
+
+            # Add an asterisk marker for Game Changers when analyzing Bracket 3 decks
+            display_name = real_name
+            if str(bracket) == '3' and scry_data[3]:
+                display_name = f"{real_name} *"
+
+            deck_list[category].append(f"1 {display_name}")
             current_count += 1
 
         current_instants = len(deck_list["Instant"])
@@ -449,7 +455,7 @@ class MTGDeckScanner:
 
                 matched_item = next(
                     (item for item in deck_list["Instant"]
-                     if item.endswith(f" {card}")), None
+                     if item.startswith("1 ") and item[2:].rstrip(" *") == card), None
                 )
                 if matched_item:
                     deck_list["Instant"].remove(matched_item)
@@ -467,7 +473,12 @@ class MTGDeckScanner:
                     cat = self.categorize_card(scry_data[1])
                     if scry_data[2] and cat not in ["Land", "Instant"]:
                         if scry_data[3] and gc_count >= max_gc: continue
-                        deck_list[cat].append(f"1 {scry_data[0]}")
+
+                        display_name = scry_data[0]
+                        if str(bracket) == '3' and scry_data[3]:
+                            display_name = f"{scry_data[0]} *"
+
+                        deck_list[cat].append(f"1 {display_name}")
                         high_consensus_pool.append(card)
                         current_count += 1
                         refill_needed -= 1
@@ -502,7 +513,7 @@ class MTGDeckScanner:
 
                     matched_item = next(
                         (item for item in deck_list[category]
-                         if item.endswith(f" {card}")), None
+                         if item.startswith("1 ") and item[2:].rstrip(" *") == card), None
                     )
                     if matched_item:
                         deck_list[category].remove(matched_item)
@@ -514,7 +525,12 @@ class MTGDeckScanner:
             for card in next_best_instants:
                 scry_data = self.get_scryfall_data(card)
                 real_name = scry_data[0]
-                deck_list["Instant"].append(f"1 {real_name}")
+
+                display_name = real_name
+                if str(bracket) == '3' and scry_data[3]:
+                    display_name = f"{real_name} *"
+
+                deck_list["Instant"].append(f"1 {display_name}")
                 current_count += 1
                 print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
 
@@ -531,7 +547,7 @@ class MTGDeckScanner:
                         continue
                     matched_item = next(
                         (item for item in deck_list[category]
-                         if item.endswith(f" {card}")), None
+                         if item.startswith("1 ") and item[2:].rstrip(" *") == card), None
                     )
                     if matched_item:
                         deck_list[category].remove(matched_item)
@@ -541,8 +557,64 @@ class MTGDeckScanner:
                         print(f"   -> Cut '{card}' for required average Lands.")
                         break
 
-        # --- FIXED FETCHABLE TARGET SAFETY NET (BASICS ONLY, PROTECTS FETCHES) ---
+        # =====================================================================
+        # MOVED UP: BASIC LAND INJECTION
+        # (Inject basics FIRST so the safety net can accurately see they exist)
+        # =====================================================================
+        sorted_basics = sorted(
+            total_basics.items(), key=lambda x: x[1], reverse=True
+        )
+        basic_types_to_use = [k.capitalize() for k, v in sorted_basics if v > 0]
+
+        if not basic_types_to_use:
+            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"]
+
+        for basic_name in basic_types_to_use:
+            if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
+                allocated = min(avg_basics[basic_name], slots_remaining)
+
+                found_existing = False
+                for i, entry in enumerate(deck_list["Land"]):
+                    if entry.endswith(f" {basic_name}"):
+                        old_count = int(entry.split(' ', 1)[0])
+                        deck_list["Land"][i] = f"{old_count + allocated} {basic_name}"
+                        found_existing = True
+                        break
+                if not found_existing:
+                    deck_list["Land"].append(f"{allocated} {basic_name}")
+
+                slots_remaining -= allocated
+
+        if slots_remaining > 0:
+            distribution = {b: 0 for b in basic_types_to_use}
+            idx = 0
+            while slots_remaining > 0:
+                distribution[basic_types_to_use[idx % len(basic_types_to_use)]] += 1
+                slots_remaining -= 1
+                idx += 1
+
+            for basic_name, count in distribution.items():
+                if count > 0:
+                    found = False
+                    for i, entry in enumerate(deck_list["Land"]):
+                        if entry.endswith(f" {basic_name}"):
+                            old_count = int(entry.split(' ', 1)[0])
+                            deck_list["Land"][i] = f"{old_count + count} {basic_name}"
+                            found = True
+                            break
+                    if not found:
+                        deck_list["Land"].append(f"{count} {basic_name}")
+
+
+        # =====================================================================
+        # FETCHABLE TARGET SAFETY NET
+        # =====================================================================
         current_fetchables = {"Plains": 0, "Island": 0, "Swamp": 0, "Mountain": 0, "Forest": 0}
+        fetch_land_names = {
+            "arid mesa", "bloodstained mire", "flooded strand", "marsh flats",
+            "misty rainforest", "polluted delta", "scalding tarn", "verdant catacombs",
+            "windswept heath", "wooded foothills"
+        }
 
         for land_entry in deck_list["Land"]:
             parts = land_entry.split(' ', 1)
@@ -565,8 +637,12 @@ class MTGDeckScanner:
                 count = int(parts[0])
                 land_name = parts[1]
                 scry_data = self.get_scryfall_data(land_name)
-                # Protect fetch lands, duals, shocks, and existing basics from being cut
-                if not any(re.search(rf'\b{ft}\b', scry_data[1], re.IGNORECASE) for ft in current_fetchables.keys()):
+                type_line = scry_data[1]
+
+                is_fetch = land_name.lower() in fetch_land_names
+                has_subtype = any(re.search(rf'\b{ft}\b', type_line, re.IGNORECASE) for ft in current_fetchables.keys())
+
+                if not is_fetch and not has_subtype:
                     for _ in range(count):
                         replaceable_lands.append(land_entry)
 
@@ -597,39 +673,18 @@ class MTGDeckScanner:
                     print(f"   -> Cut '{to_cut.split(' ', 1)[1]}' (Utility Land) for Basic '{ft}' to meet fetchable subtype targets.")
                     def_val -= 1
 
-        sorted_basics = sorted(
-            total_basics.items(), key=lambda x: x[1], reverse=True
-        )
-        basic_types_to_use = [k.capitalize() for k, v in sorted_basics if v > 0]
 
-        if not basic_types_to_use:
-            basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"]
+        # =====================================================================
+        # FINAL CONSOLIDATION PASS
+        # =====================================================================
+        final_land_counts = Counter()
+        for land_entry in deck_list["Land"]:
+            parts = land_entry.split(' ', 1)
+            count = int(parts[0])
+            land_name = parts[1]
+            final_land_counts[land_name] += count
 
-        for basic_name in basic_types_to_use:
-            if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
-                allocated = min(avg_basics[basic_name], slots_remaining)
-                deck_list["Land"].append(f"{allocated} {basic_name}")
-                slots_remaining -= allocated
-
-        if slots_remaining > 0:
-            distribution = {b: 0 for b in basic_types_to_use}
-            idx = 0
-            while slots_remaining > 0:
-                distribution[basic_types_to_use[idx % len(basic_types_to_use)]] += 1
-                slots_remaining -= 1
-                idx += 1
-
-            for basic_name, count in distribution.items():
-                if count > 0:
-                    found = False
-                    for i, entry in enumerate(deck_list["Land"]):
-                        if entry.endswith(f" {basic_name}"):
-                            old_count = int(entry.split(' ', 1)[0])
-                            deck_list["Land"][i] = f"{old_count + count} {basic_name}"
-                            found = True
-                            break
-                    if not found:
-                        deck_list["Land"].append(f"{count} {basic_name}")
+        deck_list["Land"] = [f"{count} {name}" for name, count in final_land_counts.items()]
 
         print(f"\n\n### {commander_name} - Meta Optimized Decklist")
         for category in self.type_order:
