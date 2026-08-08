@@ -14,6 +14,41 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 * This repository contains a collection of utility scripts for automation, data analysis, and system administration.
 * For full professional details see the LinkedIn profile above.
 
+## Table of Contents
+
+- [Scripts Overview](#scripts-overview)
+  - [Automation & System Administration](#automation--system-administration)
+  - [Data Analysis & Reporting](#data-analysis--reporting)
+  - [Market Monitoring & Hobby Projects](#market-monitoring--hobby-projects)
+  - [Content Scraping & Analysis](#content-scraping--analysis)
+  - [Document Processing](#document-processing)
+  - [Miscellaneous](#miscellaneous)
+- [How to Run](#how-to-run)
+  - [System Prerequisites](#system-prerequisites-windows)
+  - [Environment Setup](#environment-setup)
+  - [Install Python Packages](#install-python-packages)
+  - [Running music_part_splitter.py](#running-music_part_splitterpy)
+- [Testing](#testing)
+- [Recent Commits](#recent-commits)
+
+## Quick Start
+
+1. **Clone the repository:**
+   ```bash
+   git clone git@github.com:JaminShanti/python.git
+   cd python
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Install development dependencies (optional, for testing):**
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
 ## Scripts Overview
 
 ### Automation & System Administration
@@ -27,11 +62,12 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 ### Data Analysis & Reporting
 
 * **`nyse_trending_report.py`**: Generates a high-performance dividend report for S&P 500, 400, and 600 stocks. Uses Yahoo Finance's bulk quote API for speed and exports reports as HTML/PDF.
-* **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time. Recently upgraded to use **Plotly** for modern, interactive visualizations.
-    + Generates interactive **HTML** reports, as well as shareable **PNG** and **PDF** exports.
-    + Features intelligent legend management (Top N channels) to ensure clarity in large datasets.
-    + Supports standalone plot generation without re-fetching data via the `--plot` switch.
-    + **Output Organization**: All generated files (daily stats, video trends, plots) are now neatly organized into `yt_cache/yt_stats_daily/`, `yt_output/yt_visuals/`, and `yt_output/yt_video_stats/` subdirectories respectively.
+* **`yt_channel_compare.py`**: Tracks and compares YouTube channel view counts over time with modern interactive visualizations.
+  - Generates interactive **HTML** reports, as well as shareable **PNG** and **PDF** exports.
+  - Features intelligent legend management (Top N channels) to ensure clarity in large datasets.
+  - Supports standalone plot generation without re-fetching data via the `--plot` switch.
+  - **Output Organization**: All generated files (daily stats, video trends, plots) are organized into `yt_cache/yt_stats_daily/`, `yt_output/yt_visuals/`, and `yt_output/yt_video_stats/` subdirectories respectively.
+  - Built with **Plotly** for modern, interactive visualizations.
 * **`rotten_tomato_user_reviews.py`**: Scrapes user reviews from Rotten Tomatoes for movies or TV shows, performs sentiment analysis (rating average), and generates word clouds.
 * **`git_log_report.py`**: Analyzes a Git repository's history to generate reports on commit activity, authors, and file changes.
 * **`corona_mapping.py`**: Visualizes COVID-19 data, likely creating choropleth maps (e.g., `covid_choropleth_*.html`) to show spread or impact by region.
@@ -50,8 +86,11 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ### Market Monitoring & Hobby Projects
 
-* **`mtg_dip_detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements, particularly useful for monitoring Reserved List assets.
-* **`mtg_scanner_tool.py`**: A custom market data scanner designed to aid in evaluating collection values and optimizing deck builds for the Commander format (such as Rocco, Cabaretti Caterer). It now supports **caching** for faster subsequent runs and uses an external `excluded_cards.txt` file for easy management of cards to ignore.
+* **`mtg_dip_detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements and identify buying opportunities, particularly useful for monitoring Reserved List assets. Generates PDF and PNG reports of detected price dips.
+* **`mtg_scanner_tool.py`**: A custom market data scanner designed to evaluate collection values and optimize deck builds for the Commander format (e.g., Rocco, Cabaretti Caterer).
+  - Supports **caching** for faster subsequent runs.
+  - Uses an external `excluded_cards.txt` file for easy management of cards to ignore.
+  - Retrieves real-time pricing data from multiple sources.
 
 ### Document Processing
 
@@ -60,6 +99,10 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
     + Smart multi-page grouping keeps long charts together automatically.
     + Features an interactive CLI Wizard that catches unrecognized or misprinted OCR text, allowing you to manually assign the part.
     + **Self-Learning:** Uses an `instruments.yaml` configuration file. When you correct a misread in the Wizard, the script updates the YAML file to permanently remember the fix for future runs. Completely customizable for any ensemble layout.
+
+### Content Scraping & Analysis
+
+* **`hype_quote_scraper.py`**: Scrapes YouTube transcripts for specific keywords and hype-related phrases. Extracts matched quotes with timestamps and exports them to a text file for easy review and analysis.
 
 ### Miscellaneous
 
@@ -139,11 +182,33 @@ This script automates the separation of individual instrument parts from a full 
     python music_part_splitter.py "my_chart.pdf" --config my_custom_instruments.yaml --dump --debug
     ```
 
+## Testing
+
+This project uses **pytest** for unit testing. Development dependencies are managed in `requirements-dev.txt`.
+
+To run the test suite:
+
+```bash
+pytest
+```
+
+To run tests with verbose output:
+
+```bash
+pytest -v
+```
+
 ---
 
 ## Recent Commits
-- **1acc85d**: Updating Code changes for the year. (35 hours ago)
-- **6c2bef1**: Updating Code changes for the year. (8 weeks ago)
-- **9c2b1b8**: Updating Code changes for the year. (8 weeks ago)
-- **8bf3aa3**: Updating Code changes for the year. (8 weeks ago)
-- **0c5a50f**: Updating Code changes for the year. (3 months ago)
+
+- **1663142**: New Script
+- **5fa5dbc**: changes for basic lands
+- **a5409d6**: changes for basic lands
+- **d4e5414**: updating scanner tool
+- **1729c8a**: reorganizing repo
+- **9c6ac55**: reorganizing repo
+- **4019901**: Add git activity image for README
+- **eb7f937**: reorganizing repo
+- **4cfc3a5**: reorganizing repo
+- **ee35ae5**: reorganizing repo
