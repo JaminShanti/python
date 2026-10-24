@@ -14,6 +14,12 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 * This repository contains a collection of utility scripts for automation, data analysis, and system administration.
 * For full professional details see the LinkedIn profile above.
 
+## Recent Updates
+
+* Added `review_mighty_meeply.py`, a Mighty Meeple inventory scanner that imports decklists, caches product data, and builds cart links for viable singles.
+* Improved `mtg_scanner_tool.py` with stricter filtering for basic lands, decklist noise, and bracketed card names.
+* Refreshed the repo layout and documentation so the MTG market tools and automation scripts are easier to discover and use.
+
 ## Table of Contents
 
 - [Scripts Overview](#scripts-overview)
@@ -198,18 +204,11 @@ pytest -v
 
 ## Recent Commits
 
-- **d466f98**: updated new script
-- **6b0d37d**: updated new script
-- **3464e10**: updated new script
-- **5359a7f**: New Script
-- **1663142**: New Script
-- **5fa5dbc**: changes for basic lands
-- **a5409d6**: changes for basic lands
-- **d4e5414**: updating scanner tool
-- **1729c8a**: reorganizing repo
-- **9c6ac55**: reorganizing repo
-- **4019901**: Add git activity image for README
-- **eb7f937**: reorganizing repo
-- **4cfc3a5**: reorganizing repo
-- **ee35ae5**: reorganizing repo
-- **23c4b22**: adding Bracket 2/3 support
+- **fc78174**: Add Mighty Meeple inventory scanning and MTG market tooling
+- **23c4b22**: Add bracket 2/3 support for deck parsing
+- **12d917a**: Update README for music splitter
+- **6491c4b**: Update README for music splitter
+- **69e8078**: Commit of Music Part Splitter
+- **8517a56**: Improve OCR heuristics with smarter header scanning and alias handling
+- **3f4ddc0**: Commit of Music Part Splitter
+- **8d2ec23**: Commit of Music Part Splitter
