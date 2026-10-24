@@ -24,9 +24,10 @@ class YouTubeChannelCompare:
                  timeout=15):
         # Configuration and Directories
         self.config_file = config_file
-        self.data_dir = Path(data_dir)
-        self.output_dir = Path(output_dir)
-        self.video_data_dir = Path(video_data_dir)
+        # Updated to create subdirectories within yt_cache and yt_output
+        self.data_dir = Path("yt_cache") / data_dir
+        self.output_dir = Path("yt_output") / output_dir
+        self.video_data_dir = Path("yt_output") / video_data_dir
         
         # Control Values
         self.days = days
@@ -44,9 +45,10 @@ class YouTubeChannelCompare:
         self.today = dt.date.today()
         self.date_str, self.day_of_week = self.today.strftime("%Y-%m-%d"), self.today.strftime("%A")
         
-        self.data_dir.mkdir(exist_ok=True)
-        self.output_dir.mkdir(exist_ok=True)
-        self.video_data_dir.mkdir(exist_ok=True)
+        # Ensure parent directories and subdirectories exist
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.video_data_dir.mkdir(parents=True, exist_ok=True)
         self.data = self.load_all_data()
 
     def load_config(self):
@@ -158,8 +160,10 @@ class YouTubeChannelCompare:
 
         # Save Channel Stats
         if new_rows:
-            today_csv, new_df = self.data_dir / f"yt_stats_{self.date_str}.csv", pd.DataFrame(new_rows)
-            if today_csv.exists(): new_df = pd.concat([pd.read_csv(today_csv), new_df], ignore_index=True)
+            today_csv = self.data_dir / f"yt_stats_{self.date_str}.csv"
+            new_df = pd.DataFrame(new_rows)
+            if today_csv.exists(): 
+                new_df = pd.concat([pd.read_csv(today_csv), new_df], ignore_index=True)
             new_df.drop_duplicates(subset=['channel_name'], keep='last').to_csv(today_csv, index=False, encoding='utf-8')
 
         # Print Warnings Report

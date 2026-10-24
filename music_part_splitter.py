@@ -5,7 +5,12 @@ import argparse
 import yaml
 import sys
 from pathlib import Path
-from PyPDF2 import PdfWriter, PdfReader
+try:
+    from pypdf import PdfWriter, PdfReader
+except ImportError:
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyPDF2")
+    from PyPDF2 import PdfWriter, PdfReader
 from pdf2image import convert_from_path
 import pytesseract
 
