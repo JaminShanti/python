@@ -1,6 +1,7 @@
 /mtg_cache/
 /rotten_tomato_output/wordclouds/
 __pycache__/
+/tests/__pycache__/
 /yt_output/
 /mtg_scanner_cache/
 /nyse_output/
