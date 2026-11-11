@@ -150,3 +150,10 @@ instruments:
   aliases:
   - vibes
   - vibraphone
+- name: Vocal
+  aliases:
+  - vocal
+  - vocals
+  - voice
+  - voce
+  - singer

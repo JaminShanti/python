@@ -1,15 +1,19 @@
-import time, re, os, pickle, requests, yaml
-from urllib.parse import unquote, quote
+import argparse, time, re, os, pickle, requests, yaml
+from urllib.parse import unquote, quote, urlparse, parse_qs, urlencode, urlunparse
 from collections import Counter
+from statistics import median
 from playwright.sync_api import sync_playwright
+from mtg_deck_scraper import TopDeckDeckScraper
 
 
 class MTGDeckScanner:
-    def __init__(self, cache_dir=None, config_filename="mtg_scanner_config.yaml", min_percentage=0.20):
+    def __init__(self, cache_dir=None, config_filename="mtg_scanner_config.yaml", min_percentage=0.20,
+                 debug=False):
         # Configuration
         base_cache = os.getenv("CACHE_ROOT", os.path.abspath(os.path.dirname(__file__)))
         self.cache_dir = cache_dir or os.path.join(base_cache, "mtg_scanner_cache")
         self.min_percentage = min_percentage
+        self.debug = debug
 
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -36,9 +40,18 @@ class MTGDeckScanner:
         self.commander_targets = self._load_config_urls()
         self.excluded_cards = self._load_exclusions()
         self.game_changers = self._fetch_game_changers()
-        self.topdeck_cache = self._load_cache(self.urls_cache_file)
+
+        # 3-day expiration (259200 seconds)
+        self.topdeck_cache = self._load_cache(self.urls_cache_file, ttl_seconds=259200)
         self.deck_cache = self._load_cache(self.deck_cache_file)
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
+        self.deck_scraper = TopDeckDeckScraper(
+            self.deck_cache, self.deck_cache_file, self._save_cache, debug=self.debug
+        )
+
+    def _debug(self, message):
+        if self.debug:
+            print(message)
 
     def _load_config_urls(self):
         if os.path.exists(self.config_file):
@@ -58,6 +71,32 @@ class MTGDeckScanner:
 
         print(f"Warning: {self.config_file} not found or missing 'commander_urls'. Using default empty list.")
         return []
+
+    def _update_config_url(self, old_url, new_url):
+        if not os.path.exists(self.config_file):
+            return
+        try:
+            with open(self.config_file, 'r') as f:
+                config_data = yaml.safe_load(f)
+
+            if config_data and "commander_urls" in config_data:
+                updated = False
+                for i, item in enumerate(config_data["commander_urls"]):
+                    if isinstance(item, dict) and item.get("url") == old_url:
+                        config_data["commander_urls"][i]["url"] = new_url
+                        updated = True
+                        break
+                    elif isinstance(item, str) and item == old_url:
+                        config_data["commander_urls"][i] = new_url
+                        updated = True
+                        break
+
+                if updated:
+                    with open(self.config_file, 'w') as f:
+                        # Write the updated dict back to YAML, preserving basic formatting
+                        yaml.dump(config_data, f, sort_keys=False, default_flow_style=False)
+        except Exception as e:
+            print(f"   -> Warning: Failed to write back to config file: {e}")
 
     def _load_exclusions(self):
         exclusions = {}
@@ -111,8 +150,11 @@ class MTGDeckScanner:
             return self._load_cache(gc_cache_file)
         return set()
 
-    def _load_cache(self, filepath):
+    def _load_cache(self, filepath, ttl_seconds=None):
         if os.path.exists(filepath):
+            if ttl_seconds and (time.time() - os.path.getmtime(filepath) > ttl_seconds):
+                print(f"Cache expired for {os.path.basename(filepath)}. Fetching fresh data...")
+                return {}
             with open(filepath, 'rb') as f:
                 return pickle.load(f)
         return {}
@@ -135,101 +177,57 @@ class MTGDeckScanner:
         if commander_url in self.topdeck_cache and not force_refresh:
             return self.topdeck_cache[commander_url]
 
-        page.goto(commander_url, wait_until="networkidle")
+        page.goto(commander_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Wait for the React table to populate
+        page.wait_for_timeout(2000)
         self.auto_scroll_to_bottom(page)
 
-        html_content = page.content()
-        td_regex = re.compile(r"topdeck\.gg/deck/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+")
-        matches = td_regex.findall(html_content)
-        urls = list(set([f"https://{match}" for match in matches]))
+        # Extract all href attributes from the page
+        all_links = page.evaluate("() => Array.from(document.querySelectorAll('a')).map(a => a.href)")
+
+        # Filter for the new internal EDHTop16 decklist format
+        potential_decks = list(set([
+            link for link in all_links
+            if '/decklist/' in link.lower()
+        ]))
+
+        # Append the ?format=topdeck query to force a redirect to the original TopDeck.gg page
+        urls = [f"{link}?format=topdeck" for link in potential_decks]
 
         self.topdeck_cache[commander_url] = urls
         self._save_cache(self.topdeck_cache, self.urls_cache_file)
         return urls
 
-    def scrape_deck_data(self, page, url):
-        if url in self.deck_cache:
-            return self.deck_cache[url]
-
-        try:
-            page.goto(url, wait_until="networkidle")
-            page.wait_for_timeout(1500)
-
-            data = page.evaluate('''() => {
-                let found = new Set();
-                let basicCounts = {
-                    mountain: 0, forest: 0, plains: 0, island: 0, swamp: 0, wastes: 0
-                };
-                const cleanName = (name) => name.replace(/^\\s*\\d+x?\\s+/i, '').trim();
-
-                document.querySelectorAll('img[alt]').forEach(img => {
-                    let name = img.getAttribute('alt');
-                    if (!name || name.length < 2) return;
-
-                    let lowerName = name.toLowerCase();
-                    let basicTypes = [
-                        "mountain", "forest", "plains", "island", "swamp", "wastes",
-                        "snow-covered mountain", "snow-covered forest",
-                        "snow-covered plains", "snow-covered island",
-                        "snow-covered swamp", "snow-covered wastes"
-                    ];
-
-                    if (basicTypes.includes(lowerName)) {
-                        let text = img.parentElement.innerText || "";
-                        let match = text.match(/(\\d+)/);
-                        let count = match ? parseInt(match[1]) : 1;
-
-                        if (lowerName.includes("mountain")) basicCounts.mountain += count;
-                        else if (lowerName.includes("forest")) basicCounts.forest += count;
-                        else if (lowerName.includes("plains")) basicCounts.plains += count;
-                        else if (lowerName.includes("island")) basicCounts.island += count;
-                        else if (lowerName.includes("swamp")) basicCounts.swamp += count;
-                        else if (lowerName.includes("wastes")) basicCounts.wastes += count;
-                    } else {
-                        found.add(cleanName(name));
-                    }
-                });
-                return { cards: Array.from(found), basicCounts };
-            }''')
-
-            bad = [
-                "topdeck", "logo", "avatar", "profile", "banner", "discord",
-                "twitter", "match history", "standings", "deck", "event",
-                "buy", "card image"
-            ]
-
-            clean_cards = [
-                n for n in data['cards']
-                if not any(b in n.lower() for b in bad)
-                   and not re.match(r'^\d', n)
-            ]
-
-            result = (clean_cards, data['basicCounts'])
-            self.deck_cache[url] = result
-            self._save_cache(self.deck_cache, self.deck_cache_file)
-            return result
-
-        except Exception as e:
-            print(f"Error reading {url}: {e}")
-            return [], {"mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0, "wastes": 0}
-
     def get_scryfall_data(self, card_name):
         if card_name in self.scryfall_cache:
             cached_data = self.scryfall_cache[card_name]
+            # Handle legacy cache format upgrades
             if len(cached_data) == 3:
                 real_name, type_line, is_legal = cached_data
                 is_gc = real_name.lower() in self.game_changers or card_name.lower() in self.game_changers
                 cached_data = (real_name, type_line, is_legal, is_gc)
                 self.scryfall_cache[card_name] = cached_data
                 self._save_cache(self.scryfall_cache, self.scryfall_cache_file)
-            return cached_data
 
-        time.sleep(0.1)
+            # THE FIX: If the cached type_line is empty, the previous API lookup failed
+            # (e.g., rate limit). Don't return it; let it fall through and retry.
+            if cached_data[1]:
+                return cached_data
+
+        time.sleep(0.1)  # Be nice to Scryfall API
+
+        # 1. Try exact match first
         url = f"https://api.scryfall.com/cards/named?exact={quote(card_name)}"
         try:
-            response = requests.get(
-                url, headers={"User-Agent": "EDH-Builder-Script/1.0"}
-            )
+            response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
+
+            # 2. Fallback to fuzzy match if exact fails (handles punctuation/typo differences)
+            if response.status_code != 200:
+                time.sleep(0.1)
+                url = f"https://api.scryfall.com/cards/named?fuzzy={quote(card_name)}"
+                response = requests.get(url, headers={"User-Agent": "EDH-Builder-Script/1.0"})
+
             if response.status_code == 200:
                 res_data = response.json()
                 type_line = res_data.get("type_line", "")
@@ -239,6 +237,7 @@ class MTGDeckScanner:
                 legalities = res_data.get("legalities", {})
                 is_legal = legalities.get("commander") == "legal"
 
+                # Exclude unset/acorn cards
                 if "Sticker" in type_line or "Attraction" in type_line:
                     is_legal = False
 
@@ -252,6 +251,8 @@ class MTGDeckScanner:
         except Exception:
             pass
 
+        # If it truly fails, cache it with empty type_line so it doesn't break the script,
+        # but the new logic above ensures we retry it next time instead of it being permanent.
         is_gc = card_name.lower() in self.game_changers
         result = (card_name, "", True, is_gc)
         self.scryfall_cache[card_name] = result
@@ -275,29 +276,96 @@ class MTGDeckScanner:
         bracket_text = f" (Bracket {bracket})" if bracket else ""
         print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}{bracket_text}\n{'=' * 60}")
 
+        # 1. Try the URL exactly as it appears in the config file first
+        print(f"   -> Testing configured URL...")
         urls = self.get_topdeck_urls(page, commander_url)
+        final_query_used = ""
+
+        if len(urls) >= 30:
+            print(f"   -> Configured URL valid! Found {len(urls)} decks.")
+            final_query_used = commander_url
+        else:
+            print(f"   -> Configured URL yielded only {len(urls)} decks. Falling back to cascading search...")
+            urls = []  # Reset to allow cascade to run cleanly
+
+            # --- Cascading Search Strategy (Target: >= 30 decks) ---
+            search_steps = [
+                ("THREE_MONTHS", 50),
+                ("THREE_MONTHS", 30),
+                ("THREE_MONTHS", 16),
+                ("SIX_MONTHS", 50),
+                ("SIX_MONTHS", 30),
+                ("SIX_MONTHS", 16),
+                ("ONE_YEAR", 50),
+                ("ONE_YEAR", 30),
+                ("ONE_YEAR", 16),
+                ("ALL_TIME", 0)
+            ]
+
+            base_parsed = urlparse(commander_url)
+            base_path = base_parsed.path  # Safely isolates the clean path without old parameters
+
+            for time_period, min_size in search_steps:
+                query_data = {"timePeriod": time_period}
+                if min_size > 0:
+                    query_data["minEventSize"] = str(min_size)
+
+                built_query = urlencode(query_data)
+                target_url = urlunparse((base_parsed.scheme, base_parsed.netloc, base_path, '', built_query, ''))
+
+                # Skip if the cascade is about to test the exact URL we already failed on
+                if target_url == commander_url:
+                    continue
+
+                print(f"   -> Trying timePeriod={time_period}, minEventSize={min_size}...")
+                urls = self.get_topdeck_urls(page, target_url)
+
+                if len(urls) >= 30:
+                    print(f"   -> Found {len(urls)} decks. Target reached!")
+                    final_query_used = target_url
+                    break
+                else:
+                    print(f"   -> Found only {len(urls)} decks. Expanding search criteria...")
+
+            if len(urls) < 30 and not final_query_used:
+                fallback_url = urlunparse((base_parsed.scheme, base_parsed.netloc, base_path, '',
+                                           urlencode({"timePeriod": "ALL_TIME", "minEventSize": "0"}), ''))
+                urls = self.get_topdeck_urls(page, fallback_url)
+                final_query_used = fallback_url
+                print(f"   -> Expanded to maximum range. Collected {len(urls)} total decks.")
+
+            # 2. Write the newly discovered successful query back to mtg_scanner_config.yaml
+            if final_query_used and final_query_used != commander_url:
+                self._update_config_url(commander_url, final_query_used)
+                print(f"   -> Successfully updated config file with new URL parameters.")
+
         if not urls:
             print("No lists found!")
             return
+        # ------------------------------------------------------
 
         print(f"Scraping {len(urls)} tournament decklists...")
 
         raw_card_counter = Counter()
         card_counter = Counter()
+        deck_card_lists = []
+        deck_basic_counts = []
         total_basics = {
             "mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0, "wastes": 0
         }
         valid_deck_count = 0
 
         for i, url in enumerate(urls, 1):
-            print(f"Processing decklist {i}/{len(urls)}...", end="\r")
-            cards, b_counts = self.scrape_deck_data(page, url)
+            cards, b_counts = self.deck_scraper.scrape_deck_data(page, url)
 
             if not cards and sum(b_counts.values()) == 0:
+                self._debug(f"   -> [DEBUG] Deck {i} failed to copy or was empty.")
                 continue
 
             valid_deck_count += 1
             raw_card_counter.update(cards)
+            deck_card_lists.append(cards)
+            deck_basic_counts.append(b_counts)
 
             processed_cards = set()
             for c in cards:
@@ -318,7 +386,9 @@ class MTGDeckScanner:
             print(f"\nNo valid decklists could be processed for {commander_name}.")
             return
 
-        total_lands_all_decks = sum(total_basics.values())
+        print(f"Using {valid_deck_count} of {len(urls)} decklists for land averages.")
+
+        nonbasic_land_cards = set()
         total_instants_all_decks = 0
 
         total_fetchable_targets = {
@@ -335,17 +405,28 @@ class MTGDeckScanner:
         ]
 
         print(f"\nAnalyzing {len(raw_unique_cards)} unique cards for averages...")
+
+        # --- DEBUG LOGGING 2: Track Scryfall Failures ---
+        failed_lookups = []
+        # ------------------------------------------------
+
         for idx, card in enumerate(raw_unique_cards, 1):
-            print(f"Checking Scryfall typelines {idx}/{len(raw_unique_cards)}...", end="\r")
+            if self.debug:
+                print(f"Checking Scryfall typelines {idx}/{len(raw_unique_cards)}...", end="\r")
             scry_data = self.get_scryfall_data(card)
             type_line, is_legal = scry_data[1], scry_data[2]
 
             if not is_legal:
                 continue
 
+            # --- DEBUG LOGGING 2 (cont) ---
+            if not type_line:
+                failed_lookups.append(card)
+            # ------------------------------
+
             cat = self.categorize_card(type_line)
             if cat == "Land":
-                total_lands_all_decks += raw_card_counter[card]
+                nonbasic_land_cards.add(card)
 
                 for land_type in total_fetchable_targets.keys():
                     if re.search(rf'\b{land_type}\b', type_line, re.IGNORECASE):
@@ -354,14 +435,27 @@ class MTGDeckScanner:
             elif cat == "Instant":
                 total_instants_all_decks += raw_card_counter[card]
 
-        print(" " * 80, end="\r")
+        if self.debug:
+            print(" " * 80, end="\r")
 
-        dynamic_min_lands = round(total_lands_all_decks / valid_deck_count)
+        # --- DEBUG LOGGING 2 (cont) ---
+        if failed_lookups:
+            self._debug("\n   -> [DEBUG] The following cards failed Scryfall lookups and defaulted to 'Creature':")
+            for f_card in failed_lookups:
+                self._debug(f"      * {f_card}")
+        # ------------------------------
+
+        deck_land_counts = [
+            sum(basic_counts.values())
+            + sum(card in nonbasic_land_cards for card in cards)
+            for cards, basic_counts in zip(deck_card_lists, deck_basic_counts)
+        ]
+        dynamic_min_lands = round(median(deck_land_counts))
         dynamic_min_instants = round(total_instants_all_decks / valid_deck_count)
         dynamic_max_instants = dynamic_min_instants + 2
 
         print(
-            f"Targeting: {dynamic_min_lands} Lands | "
+            f"Targeting: {dynamic_min_lands} Median Lands | "
             f"{dynamic_min_instants}-{dynamic_max_instants} Instants"
         )
 
@@ -437,7 +531,6 @@ class MTGDeckScanner:
             real_name, type_line = scry_data[0], scry_data[1]
             category = self.categorize_card(type_line)
 
-            # Add an asterisk marker for Game Changers when analyzing Bracket 3 decks
             display_name = real_name
             if str(bracket) == '3' and scry_data[3]:
                 display_name = f"{real_name} *"
@@ -558,8 +651,7 @@ class MTGDeckScanner:
                         break
 
         # =====================================================================
-        # MOVED UP: BASIC LAND INJECTION
-        # (Inject basics FIRST so the safety net can accurately see they exist)
+        # BASIC LAND INJECTION
         # =====================================================================
         sorted_basics = sorted(
             total_basics.items(), key=lambda x: x[1], reverse=True
@@ -605,7 +697,6 @@ class MTGDeckScanner:
                     if not found:
                         deck_list["Land"].append(f"{count} {basic_name}")
 
-
         # =====================================================================
         # FETCHABLE TARGET SAFETY NET
         # =====================================================================
@@ -628,7 +719,8 @@ class MTGDeckScanner:
                 if re.search(rf'\b{ft}\b', type_line, re.IGNORECASE):
                     current_fetchables[ft] += count
 
-        deficits = {k: v - current_fetchables.get(k, 0) for k, v in avg_fetchable.items() if v > current_fetchables.get(k, 0)}
+        deficits = {k: v - current_fetchables.get(k, 0) for k, v in avg_fetchable.items() if
+                    v > current_fetchables.get(k, 0)}
 
         if deficits:
             replaceable_lands = []
@@ -670,9 +762,9 @@ class MTGDeckScanner:
                     if not basic_added:
                         deck_list["Land"].append(f"1 {ft}")
 
-                    print(f"   -> Cut '{to_cut.split(' ', 1)[1]}' (Utility Land) for Basic '{ft}' to meet fetchable subtype targets.")
+                    print(
+                        f"   -> Cut '{to_cut.split(' ', 1)[1]}' (Utility Land) for Basic '{ft}' to meet fetchable subtype targets.")
                     def_val -= 1
-
 
         # =====================================================================
         # FINAL CONSOLIDATION PASS
@@ -686,7 +778,7 @@ class MTGDeckScanner:
 
         deck_list["Land"] = [f"{count} {name}" for name, count in final_land_counts.items()]
 
-        print(f"\n\n### {commander_name} - Meta Optimized Decklist")
+        print(f"\n\n### {commander_name} Meta Optimized Decklist")
         for category in self.type_order:
             cards_in_cat = deck_list[category]
             if cards_in_cat:
@@ -702,7 +794,8 @@ class MTGDeckScanner:
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            context = browser.new_context(permissions=['clipboard-read', 'clipboard-write'])
+            page = context.new_page()
 
             for target in self.commander_targets:
                 self.analyze_commander(page, target["url"], target.get("bracket"))
@@ -710,6 +803,17 @@ class MTGDeckScanner:
             browser.close()
 
 
-if __name__ == "__main__":
-    scanner = MTGDeckScanner()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Analyze Commander decklists.")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="show deck parsing and lookup diagnostics",
+    )
+    args = parser.parse_args(argv)
+    scanner = MTGDeckScanner(debug=args.debug)
     scanner.run()
+
+
+if __name__ == "__main__":
+    main()

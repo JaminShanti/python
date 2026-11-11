@@ -19,6 +19,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 * Added `review_mighty_meeply.py`, a Mighty Meeple inventory scanner that imports decklists, caches product data, and builds cart links for viable singles.
 * Improved `mtg_scanner_tool.py` with stricter filtering for basic lands, decklist noise, and bracketed card names.
 * Refreshed the repo layout and documentation so the MTG market tools and automation scripts are easier to discover and use.
+* Improved music-part OCR to retry sparse pages and recognize Vocal/Voce labels from the instrument configuration.
 
 ## Table of Contents
 
@@ -92,6 +93,10 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
   - Uses an external `excluded_cards.txt` file for easy management of cards to ignore.
   - Retrieves real-time pricing data from multiple sources.
   - Includes improved bracketed deck-entry handling and stricter filtering for unwanted basic-land / label noise.
+  - Debug logging is off by default for clean deck output. To show deck parsing and lookup diagnostics, run:
+    ```python
+    python .\mtg_scanner_tool.py --debug
+    ```
 * **`review_mighty_meeply.py`**: Imports a decklist, harvests current inventory from Mighty Meeple, filters out unwanted names/conditions/basic lands, and produces cart permalinks for any matched single-card targets.
 
 ### Document Processing
@@ -156,32 +161,32 @@ playwright install chromium
 
 This script automates the separation of individual instrument parts from a full PDF score.
 
-1.  **Configuration File (`instruments.yaml`)**:
-    *   The script uses `instruments.yaml` to define instrument names and their common aliases (e.g., "1st Alto Sax", "Alto Sax 1").
-    *   A default `instruments.yaml` should be provided in the repository. You can customize this file to match your specific ensemble's instrumentation or preferred naming conventions.
-    *   When the interactive wizard learns a new alias, it updates this file automatically.
+1.  **Configuration File (`music_cache/instruments.yaml`)**:
+    *   The script uses this file to define instrument names and their common aliases (e.g., "1st Alto Sax", "Alto Sax 1").
+    *   Customize it to match your ensemble's instrumentation or preferred naming conventions.
+    *   When the interactive wizard learns a new alias, it updates this file automatically. Keep aliases in this configuration rather than hardcoding them in the script.
 
 2.  **Basic Usage**:
     *   Navigate to the `python` directory in your terminal.
     *   Run the script, providing the full path to your PDF chart:
         ```bash
-        python music_part_splitter.py "C:\Users\YourUser\Desktop\Jersey Bounce - FULL Big Band - Nestico.pdf"
+        python music_part_splitter.py "C:\Users\YourUser\Desktop\Jersey Bounce - FULL Big Band - Nestico.pdf" --config music_cache\instruments.yaml
         ```
         (Remember to enclose paths with spaces in double quotes).
 
 3.  **Interactive Wizard**:
     *   If the script encounters an unrecognized instrument name on a page, it will pause and prompt you to identify it.
     *   You'll be shown a snippet of the OCR text and a list of known instruments.
-    *   Select the correct instrument, and optionally provide a unique "alias" (a word or phrase from the page) that the script can use to identify this part in the future. This alias will be saved to `instruments.yaml`.
+    *   Select the correct instrument, and optionally provide a unique "alias" (a word or phrase from the page) that the script can use to identify this part in the future. This alias will be saved to `music_cache/instruments.yaml`.
 
 4.  **Arguments**:
-    *   `--config <path_to_yaml>`: Specify a custom path to your `instruments.yaml` file if it's not in the same directory as the script.
+    *   `--config <path_to_yaml>`: Specify a custom YAML configuration path. The repository's band configuration is `music_cache/instruments.yaml`.
     *   `--dump`: Creates a text file (`<PDF_NAME>_OCR_DUMP.txt`) in the output folder containing the raw OCR text for every page. Useful for debugging detection issues.
     *   `--debug`: Enables verbose logging, showing more details about the OCR process and detection logic.
 
     Example with arguments:
     ```bash
-    python music_part_splitter.py "my_chart.pdf" --config my_custom_instruments.yaml --dump --debug
+    python music_part_splitter.py "my_chart.pdf" --config music_cache\instruments.yaml --dump --debug
     ```
 
 ## Testing

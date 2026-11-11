@@ -1,6 +1,6 @@
 /mtg_cache/
 /rotten_tomato_output/wordclouds/
-/__pycache__/
+__pycache__/
 /yt_output/
 /mtg_scanner_cache/
 /nyse_output/
@@ -9,3 +9,4 @@
 /git_output/
 /mtg_dip_output/
 /meeple_cache/
+/music_output/

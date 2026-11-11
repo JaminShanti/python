@@ -126,6 +126,8 @@ class BigBandChartSplitter:
                     if n == 0: continue
                     for i in range(0, max(1, len(words) - n + 1)):
                         candidate = " ".join(words[i:i + n])
+                        if a == "bass" and candidate == "brass":
+                            continue
                         ratio = difflib.SequenceMatcher(None, candidate, a).ratio()
                         if ratio >= 0.88:
                             fscore += 1
@@ -134,6 +136,15 @@ class BigBandChartSplitter:
                     best_inst = name
 
         return best_inst if highest_score > 0 else None
+
+    def _get_page_instrument(self, image, text):
+        detected = self._get_best_match(text)
+        if detected is None:
+            alternate_text = pytesseract.image_to_string(image.convert('L'), config='--psm 11').lower()
+            detected = self._get_best_match(alternate_text)
+            if detected:
+                self.logger.debug(f"Alternate OCR detected part: {detected}")
+        return detected
 
     def _run_wizard(self, page_index, text):
         print(f"\n{'=' * 60}")
@@ -208,7 +219,7 @@ class BigBandChartSplitter:
             text = pytesseract.image_to_string(img.convert('L'), config='--psm 3').lower()
             raw_ocr_dump.append(f"PAGE {i + 1}:\n{text}")
 
-            detected = self._get_best_match(text)
+            detected = self._get_page_instrument(img, text)
             is_first_page_of_part = bool(re.search(r'\b(arranged by|music by|words by|composed by)\b', text))
 
             self.logger.debug(
