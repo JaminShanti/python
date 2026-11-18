@@ -1,7 +1,10 @@
 import re
+import time
 
 
 class TopDeckDeckScraper:
+    NEGATIVE_CACHE_TTL = 24 * 60 * 60
+
     def __init__(self, deck_cache, deck_cache_file, save_cache, debug=False):
         self.deck_cache = deck_cache
         self.deck_cache_file = deck_cache_file
@@ -14,14 +17,25 @@ class TopDeckDeckScraper:
 
     def scrape_deck_data(self, page, url):
         if url in self.deck_cache:
-            cached_cards, cached_basics = self.deck_cache[url]
-            if sum(cached_basics.values()) <= 40:
-                return cached_cards, cached_basics
-            self._debug(
-                f"   -> [DEBUG] Ignoring malformed cached deck from {url}: "
-                f"{sum(cached_basics.values())} basic lands."
-            )
-            del self.deck_cache[url]
+            cached_entry = self.deck_cache[url]
+            if len(cached_entry) == 3:
+                cached_cards, cached_basics, cached_at = cached_entry
+                if time.time() - cached_at < self.NEGATIVE_CACHE_TTL:
+                    self._debug(f"   -> [DEBUG] Using temporarily cached incomplete deck: {url}")
+                    return cached_cards, cached_basics
+                del self.deck_cache[url]
+                self._debug(f"   -> [DEBUG] Retrying expired incomplete deck cache: {url}")
+            else:
+                cached_cards, cached_basics = cached_entry
+                if sum(cached_basics.values()) > 40:
+                    self._debug(
+                        f"   -> [DEBUG] Ignoring malformed cached deck from {url}: "
+                        f"{sum(cached_basics.values())} basic lands."
+                    )
+                    del self.deck_cache[url]
+                else:
+                    self._debug(f"   -> [DEBUG] Using cached deck: {url}")
+                    return cached_cards, cached_basics
 
         try:
             for attempt in range(1, 3):
@@ -89,6 +103,7 @@ class TopDeckDeckScraper:
                             f"   -> [DEBUG] Rejected malformed deck from {url}: "
                             f"{sum(basic_counts.values())} basic lands."
                         )
+                        self._cache_rejected_deck(url)
                         return [], self._empty_basic_counts()
                 else:
                     found.add(name)
@@ -98,6 +113,7 @@ class TopDeckDeckScraper:
                     f"   -> [DEBUG] Rejected incomplete deck from {url}: parsed "
                     f"{total_parsed_cards} cards across {parsed_card_lines} card lines."
                 )
+                self._cache_rejected_deck(url)
                 return [], self._empty_basic_counts()
 
             result = (list(found), basic_counts)
@@ -108,6 +124,10 @@ class TopDeckDeckScraper:
         except Exception as e:
             print(f"Error reading {url}: {e}")
             return [], self._empty_basic_counts()
+
+    def _cache_rejected_deck(self, url):
+        self.deck_cache[url] = ([], self._empty_basic_counts(), time.time())
+        self.save_cache(self.deck_cache, self.deck_cache_file)
 
     @staticmethod
     def _empty_basic_counts():

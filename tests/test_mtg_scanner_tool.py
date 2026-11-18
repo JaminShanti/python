@@ -116,6 +116,37 @@ def test_scrape_deck_data_reports_incomplete_deck(capsys):
     assert "parsed 98 cards across 98 card lines" in capsys.readouterr().out
 
 
+def test_scrape_deck_data_caches_incomplete_deck_temporarily():
+    clipboard = "\n".join(["Lightning Bolt" for _ in range(98)])
+    scraper = create_deck_scraper()
+    page = ClipboardPage(clipboard)
+
+    scraper.scrape_deck_data(page, "deck-url")
+    cards, basics = scraper.scrape_deck_data(page, "deck-url")
+
+    assert cards == []
+    assert sum(basics.values()) == 0
+    assert page.navigation_count == 1
+    assert len(scraper.deck_cache["deck-url"]) == 3
+
+
+def test_scrape_deck_data_retries_expired_incomplete_cache():
+    clipboard = "\n".join(["Lightning Bolt" for _ in range(99)])
+    scraper = create_deck_scraper()
+    scraper.deck_cache["deck-url"] = (
+        [],
+        scraper._empty_basic_counts(),
+        0,
+    )
+    page = ClipboardPage(clipboard)
+
+    cards, _ = scraper.scrape_deck_data(page, "deck-url")
+
+    assert cards == ["Lightning Bolt"]
+    assert page.navigation_count == 1
+    assert len(scraper.deck_cache["deck-url"]) == 2
+
+
 def test_scrape_deck_data_hides_diagnostics_when_debug_is_disabled(capsys):
     clipboard = "\n".join(["Lightning Bolt" for _ in range(98)])
 
@@ -155,3 +186,26 @@ def test_scrape_deck_data_discards_malformed_cached_deck():
     cards, _ = scraper.scrape_deck_data(ClipboardPage(clipboard), "deck-url")
 
     assert cards == ["Lightning Bolt"]
+
+
+def test_auto_scroll_stops_after_maximum_attempts(capsys):
+    class GrowingPage:
+        def __init__(self):
+            self.scrolls = 0
+
+        def evaluate(self, script):
+            if script.startswith("window.scrollTo"):
+                self.scrolls += 1
+                return None
+            return self.scrolls
+
+        def wait_for_timeout(self, timeout):
+            pass
+
+    scanner = module.MTGDeckScanner.__new__(module.MTGDeckScanner)
+    page = GrowingPage()
+
+    scanner.auto_scroll_to_bottom(page, max_scrolls=3)
+
+    assert page.scrolls == 3
+    assert "reached its 3-step limit" in capsys.readouterr().out
