@@ -23,16 +23,29 @@ instruments:
   - tst eb alto saxophone
   - 1st alto saxophone
   - ist eb alto sax
+  - 1st saxophone eb alto
+  - 1st sax. eb alto
+  - ist sax. eb alto
 - name: 2nd Alto Sax
   aliases:
   - alto sax 2
   - alto 2
   - 2nd alto
   - alto sax ii
+  - alto sax 3
+  - alto 3
+  - 3rd alto
+  - alto sax iii
+  - 3rd alto saxophone
+  - 3rd eb alto saxophone
+  - 3rd saxophone eb alto
+  - 3rd sax. eb alto
   - 2nd eb alto saxophone
   - 2nd ep? alto saxophone
   - 2nd alto saxophone
   - 2nd eb alto
+  - alto 2nd
+  - alto saxophone 2nd
 - name: 1st Tenor Sax
   aliases:
   - tenor sax 1
@@ -42,6 +55,10 @@ instruments:
   - 1st bb tenor saxophone
   - 1st tenor saxophone
   - 1st bb tenor
+  - 2nd bb tenor
+  - 2nd bb tenor saxophone
+  - 2nd saxophone bb tenor
+  - 2nd sax. bb tenor
 - name: 2nd Tenor Sax
   aliases:
   - tenor sax 2
@@ -49,9 +66,14 @@ instruments:
   - 2nd tenor
   - tenor sax ii
   - bb tenor saxophone
-  - 2nd bb tenor
-  - 2nd bb tenor saxophone
   - 2nd tenor saxophone
+  - 4th tenor
+  - tenor 4
+  - 4th tenor saxophone
+  - 4th bb tenor
+  - 4th bb tenor saxophone
+  - 4th saxophone bb tenor
+  - 4th sax. bb tenor
 - name: Bari Sax
   aliases:
   - bari sax
@@ -137,6 +159,10 @@ instruments:
   - guitarist
   - guitarist's guide
   - guitarist's
+- name: Violins
+  aliases:
+  - violin
+  - violins
 - name: Bass
   aliases:
   - string bass

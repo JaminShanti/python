@@ -56,13 +56,6 @@ class BigBandChartSplitter:
                 patterns.append(re.escape(a))
         self.conductor_regex = re.compile('|'.join(patterns))
 
-    def _get_next_instrument(self, current_name):
-        """Returns the next instrument in the sequence based on YAML order."""
-        for i, (name, _) in enumerate(self.instruments):
-            if name == current_name and i + 1 < len(self.instruments):
-                return self.instruments[i + 1][0]
-        return current_name
-
     def _add_alias_to_config(self, instrument_name, new_alias):
         """Adds a new alias to the YAML config and in-memory list."""
         new_alias = new_alias.lower().strip()
@@ -101,6 +94,7 @@ class BigBandChartSplitter:
             self.logger.error(f"Failed to save new alias to config: {e}")
 
     def _get_best_match(self, text):
+        text = text.lower()
         lines = [line for line in text.splitlines() if line.strip()]
         meaningful_lines = [l for l in lines if len(l.strip()) > 2 and re.search(r'[a-z0-9]', l)]
         header_text = "\n".join(meaningful_lines[:20])
@@ -212,8 +206,6 @@ class BigBandChartSplitter:
         last_title_page = -10
         raw_ocr_dump = []
 
-        part_instance_count = {}
-
         for i, img in enumerate(images):
             # Only downcase the string now; no regex normalization
             text = pytesseract.image_to_string(img.convert('L'), config='--psm 3').lower()
@@ -239,14 +231,6 @@ class BigBandChartSplitter:
             elif is_first_page_of_part:
                 if detected:
                     current_inst = detected
-                    if (i - last_title_page) > 1:
-                        part_instance_count[detected] = part_instance_count.get(detected, 0) + 1
-
-                    count = part_instance_count.get(detected, 1)
-                    if count == 2:
-                        current_inst = self._get_next_instrument(detected)
-                else:
-                    current_inst = self._get_next_instrument(last_inst)
 
                 is_new_detection = True
                 last_title_page = i
@@ -262,9 +246,6 @@ class BigBandChartSplitter:
                     elif detected:
                         current_inst = detected
                         is_new_detection = True
-
-            if is_new_detection and current_inst == 'Trombone 4' and last_inst == 'Trombone 2':
-                current_inst = 'Trombone 3'
 
             if current_inst is None:
                 current_inst = self._run_wizard(i, text)
@@ -313,7 +294,8 @@ class BigBandChartSplitter:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('path', help='Path to the PDF file')
-    parser.add_argument('-c', '--config', default='instruments.yaml', help='Path to the YAML config file')
+    default_config = Path(__file__).resolve().parent / "music_cache" / "instruments.yaml"
+    parser.add_argument('-c', '--config', default=str(default_config), help='Path to the YAML config file')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--dump', action='store_true', help='Dump raw OCR text to a file')
     args = parser.parse_args()
