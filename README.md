@@ -34,7 +34,7 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
   - [System Prerequisites](#system-prerequisites-windows)
   - [Environment Setup](#environment-setup)
   - [Install Python Packages](#install-python-packages)
-  - [Running music_part_splitter.py](#running-music_part_splitterpy)
+  - [Music sheet tools](#music-sheet-tools)
 - [Testing](#testing)
 - [Recent Commits](#recent-commits)
 
@@ -101,11 +101,8 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ### Document Processing
 
-* **`music_part_splitter.py`**: Automates the extraction of individual instrument parts from full Big Band master score PDFs. 
-    + Uses OCR (`pytesseract`) to scan pages and automatically separate parts (1st Alto, 2nd Trumpet, Drums, etc.) into individually named PDF files.
-    + Smart multi-page grouping keeps long charts together automatically.
-    + Features an interactive CLI Wizard that catches unrecognized or misprinted OCR text, allowing you to manually assign the part.
-    + **Self-Learning:** Uses an `instruments.yaml` configuration file. When you correct a misread in the Wizard, the script updates the YAML file to permanently remember the fix for future runs. Completely customizable for any ensemble layout.
+* **`music_sheet_scripts\`**: Reviewed PDF part splitting, missing-part recovery,
+  music inventories and chart-download tools. See the [music tools README](music_sheet_scripts/README.md).
 
 ### Content Scraping & Analysis
 
@@ -122,7 +119,7 @@ This section provides instructions for setting up your environment and running t
 
 ### System Prerequisites (Windows)
 
-Some scripts, particularly `music_part_splitter.py`, rely on external software for PDF and image processing. You **must** install these and ensure they are accessible via your Windows system's `PATH` environment variable.
+Some scripts, particularly `music_sheet_scripts\music_part_splitter.py`, rely on external software for PDF and image processing. You **must** install these and ensure they are accessible via your Windows system's `PATH` environment variable.
 
 1.  **Python 3.13+**:
     *   Download the latest Python installer from python.org.
@@ -157,37 +154,10 @@ pip install gitpython pandas matplotlib plotly kaleido boto3 requests bigsuds Py
 playwright install chromium
 ```
 
-### Running `music_part_splitter.py`
+### Music sheet tools
 
-This script automates the separation of individual instrument parts from a full PDF score.
-
-1.  **Configuration File (`music_cache/instruments.yaml`)**:
-    *   The script uses this file to define instrument names and their common aliases (e.g., "1st Alto Sax", "Alto Sax 1").
-    *   Customize it to match your ensemble's instrumentation or preferred naming conventions.
-    *   When the interactive wizard learns a new alias, it updates this file automatically. Keep aliases in this configuration rather than hardcoding them in the script.
-
-2.  **Basic Usage**:
-    *   Navigate to the `python` directory in your terminal.
-    *   Run the script, providing the full path to your PDF chart:
-        ```bash
-        python music_part_splitter.py "C:\Users\YourUser\Desktop\Jersey Bounce - FULL Big Band - Nestico.pdf" --config music_cache\instruments.yaml
-        ```
-        (Remember to enclose paths with spaces in double quotes).
-
-3.  **Interactive Wizard**:
-    *   If the script encounters an unrecognized instrument name on a page, it will pause and prompt you to identify it.
-    *   You'll be shown a snippet of the OCR text and a list of known instruments.
-    *   Select the correct instrument, and optionally provide a unique "alias" (a word or phrase from the page) that the script can use to identify this part in the future. This alias will be saved to `music_cache/instruments.yaml`.
-
-4.  **Arguments**:
-    *   `--config <path_to_yaml>`: Specify a custom YAML configuration path. The repository's band configuration is `music_cache/instruments.yaml`.
-    *   `--dump`: Creates a text file (`<PDF_NAME>_OCR_DUMP.txt`) in the output folder containing the raw OCR text for every page. Useful for debugging detection issues.
-    *   `--debug`: Enables verbose logging, showing more details about the OCR process and detection logic.
-
-    Example with arguments:
-    ```bash
-    python music_part_splitter.py "my_chart.pdf" --config music_cache\instruments.yaml --dump --debug
-    ```
+See [music_sheet_scripts/README.md](music_sheet_scripts/README.md) for the
+reviewed splitting and Dropbox recovery workflows.
 
 ## Testing
 

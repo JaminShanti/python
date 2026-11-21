@@ -2,6 +2,9 @@ import re
 import difflib
 import logging
 import argparse
+import hashlib
+import shutil
+import tempfile
 import yaml
 import sys
 from pathlib import Path
@@ -13,6 +16,17 @@ except ImportError:
     from PyPDF2 import PdfWriter, PdfReader
 from pdf2image import convert_from_path
 import pytesseract
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise ValueError(f"Duplicate key in page map: {key!r}")
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
 
 
 class BigBandChartSplitter:
@@ -190,85 +204,119 @@ class BigBandChartSplitter:
                 print("Please enter a valid number.")
 
     def process_file(self, file_path, dump=False):
-        self.logger.info(f"Starting processing for: {file_path.name}")
-        self.logger.info(
-            f"Converting PDF to images at 300 DPI (This will take a moment for {file_path.stat().st_size / (1024 * 1024):.2f} MB)...")
-
-        images = convert_from_path(file_path, dpi=300)
-        self.logger.info(f"Successfully converted PDF into {len(images)} images. Starting OCR...")
-
-        out_dir = file_path.parent / f"{file_path.stem}_parts"
-        out_dir.mkdir(exist_ok=True)
-
-        parts = {}
-        last_inst = None
-        last_detected_page = -1
-        last_title_page = -10
-        raw_ocr_dump = []
-
-        for i, img in enumerate(images):
-            # Only downcase the string now; no regex normalization
-            text = pytesseract.image_to_string(img.convert('L'), config='--psm 3').lower()
-            raw_ocr_dump.append(f"PAGE {i + 1}:\n{text}")
-
-            detected = self._get_page_instrument(img, text)
-            is_first_page_of_part = bool(re.search(r'\b(arranged by|music by|words by|composed by)\b', text))
-
-            self.logger.debug(
-                f"Page {i + 1} OCR length={len(text)}; detected={detected}; is_first_page={is_first_page_of_part}")
-
-            is_new_detection = False
-            current_inst = None
-
-            if last_inst == 'Conductor Score' and not (is_first_page_of_part or detected):
-                current_inst = 'Conductor Score'
-
-            elif self.conductor_regex.search(text):
-                current_inst = 'Conductor Score'
-                is_new_detection = True
-                last_title_page = i
-
-            elif is_first_page_of_part:
-                if detected:
-                    current_inst = detected
-
-                is_new_detection = True
-                last_title_page = i
-
-            else:
-                if detected and detected != last_inst:
-                    current_inst = detected
-                    is_new_detection = True
-                else:
-                    distance = i - last_detected_page
-                    if last_inst is not None and distance <= 3:
-                        current_inst = last_inst
-                    elif detected:
-                        current_inst = detected
-                        is_new_detection = True
-
-            if current_inst is None:
-                current_inst = self._run_wizard(i, text)
-                if current_inst:
-                    is_new_detection = True
-
-            if current_inst:
-                parts.setdefault(current_inst, []).append(i)
-                if is_new_detection:
-                    last_detected_page = i
-                last_inst = current_inst
-            else:
-                last_inst = None
-
-            self.logger.info(f"Page {i + 1} | Assigned: {current_inst}")
-
+        """Create an OCR draft. Suggestions never become page assignments."""
+        file_path = Path(file_path)
+        draft_path = file_path.with_name(f"{file_path.stem}_page_map.yaml")
+        dump_path = file_path.with_name(f"{file_path.stem}_OCR_DUMP.txt")
+        if draft_path.exists() or (dump and dump_path.exists()):
+            raise FileExistsError("Draft or OCR dump already exists; move it before creating another.")
+        page_count = len(PdfReader(file_path).pages)
+        source_hash = self._file_hash(file_path)
+        suggestions, raw_ocr = [], []
+        for page in range(1, page_count + 1):
+            image = convert_from_path(file_path, dpi=200, first_page=page, last_page=page)[0]
+            header = image.crop((0, 0, image.width, image.height // 3)).convert('L')
+            text = pytesseract.image_to_string(header, config='--psm 3')
+            detected = self._get_page_instrument(header, text)
+            if self.conductor_regex.search(text.lower()):
+                detected = "Conductor Score" if detected is None else detected
+            suggestions.append({"page": page, "suggested_instrument": detected})
+            raw_ocr.append(f"PAGE {page}:\n{text}")
+            self.logger.info("Page %s/%s | OCR suggestion: %s", page, page_count, detected)
+        if self._file_hash(file_path) != source_hash:
+            raise RuntimeError("Source PDF changed during OCR; no draft was written.")
+        draft = {
+            "source_file": file_path.name, "source_sha256": source_hash,
+            "page_count": page_count, "song_number": "", "song_title": "",
+            "arrangement": "", "parts": {}, "excluded_pages": {},
+            "ocr_suggestions": suggestions,
+        }
+        with draft_path.open("x", encoding="utf-8") as f:
+            yaml.safe_dump(draft, f, sort_keys=False, allow_unicode=True)
         if dump:
-            dump_path = out_dir / f"{file_path.stem}_OCR_DUMP.txt"
-            with open(dump_path, "w", encoding="utf-8") as f:
-                f.write("\n\n".join(raw_ocr_dump))
-            self.logger.info(f"Dump saved to {dump_path}")
+            with dump_path.open("x", encoding="utf-8") as f:
+                f.write("\n\n".join(raw_ocr))
+        self.logger.info("Review and edit page map: %s", draft_path)
+        return draft_path
 
-        self._save(file_path, out_dir, parts)
+    @staticmethod
+    def _file_hash(path):
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _safe_component(value, label):
+        if (not isinstance(value, str) or not value.strip() or value != value.strip()
+                or re.search(r'[<>:"/\\|?*\x00-\x1f]', value) or value.endswith('.')
+                or value in {".", ".."}):
+            raise ValueError(f"{label} must be a nonempty, safe Windows filename component.")
+        if re.fullmatch(r'(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', value, re.I):
+            raise ValueError(f"{label} is a reserved Windows filename.")
+        return value
+
+    def split_from_map(self, source, map_path, output_parent=None):
+        source, map_path = Path(source), Path(map_path)
+        with map_path.open(encoding="utf-8") as f:
+            mapping = yaml.load(f, Loader=UniqueKeyLoader)
+        if not isinstance(mapping, dict):
+            raise ValueError("Page map must be a YAML mapping.")
+        source_hash = self._file_hash(source)
+        reader = PdfReader(source)
+        if (mapping.get("source_file") != source.name or mapping.get("source_sha256") != source_hash
+                or mapping.get("page_count") != len(reader.pages)):
+            raise ValueError("Page map does not match this source PDF and page count.")
+        number = self._safe_component(mapping.get("song_number"), "Song number")
+        if not re.fullmatch(r'\d+(?:-?[A-Za-z]|-\d+)?', number):
+            raise ValueError("Song number must be a number, optionally followed by a letter or -number.")
+        title = self._safe_component(mapping.get("song_title"), "Song title")
+        parts, excluded = mapping.get("parts"), mapping.get("excluded_pages")
+        if not isinstance(parts, dict) or not parts or not isinstance(excluded, dict):
+            raise ValueError("Provide parts and an excluded_pages mapping, even if exclusions are empty.")
+        seen, names = set(), set()
+        for group, entries in (("parts", parts), ("excluded_pages", excluded)):
+            for label, pages in entries.items():
+                if group == "parts":
+                    self._safe_component(label, "Instrument")
+                    if label.casefold() in names:
+                        raise ValueError(f"Duplicate instrument name: {label}")
+                    names.add(label.casefold())
+                elif not isinstance(label, str) or not label.strip():
+                    raise ValueError("Every excluded page group needs a reason.")
+                if not isinstance(pages, list) or not pages:
+                    raise ValueError(f"{label}: pages must be a nonempty list.")
+                for page in pages:
+                    if type(page) is not int or page < 1 or page > len(reader.pages) or page in seen:
+                        raise ValueError(f"{label}: duplicate or invalid source page {page!r}.")
+                    seen.add(page)
+        missing = sorted(set(range(1, len(reader.pages) + 1)) - seen)
+        if missing:
+            raise ValueError(f"Every page must be assigned or excluded. Unaccounted pages: {missing}")
+        parent = Path(output_parent) if output_parent else source.parent
+        if not parent.is_dir():
+            raise FileNotFoundError(f"Output directory does not exist: {parent}")
+        out_dir = parent / f"{number} - {title}_parts"
+        if out_dir.exists():
+            raise FileExistsError(f"Output already exists: {out_dir}")
+        temporary = Path(tempfile.mkdtemp(prefix=".split-", dir=parent))
+        try:
+            for name, pages in parts.items():
+                writer = PdfWriter()
+                for page in pages:
+                    writer.add_page(reader.pages[page - 1])
+                with (temporary / f"{name} - {number} {title}.pdf").open("xb") as f:
+                    writer.write(f)
+            shutil.copyfile(map_path, temporary / "page_map.yaml")
+            if self._file_hash(source) != source_hash:
+                raise RuntimeError("Source PDF changed during splitting.")
+            temporary.rename(out_dir)
+        except Exception:
+            shutil.rmtree(temporary)
+            raise
+        self.logger.info("Saved %s reviewed parts to %s", len(parts), out_dir)
+        return out_dir
 
     def _sanitize_filename(self, name):
         return re.sub(r'[^a-zA-Z0-9]', '_', name)
@@ -298,8 +346,17 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--config', default=str(default_config), help='Path to the YAML config file')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--dump', action='store_true', help='Dump raw OCR text to a file')
+    parser.add_argument('--page-map', help='Reviewed YAML page map; without this option, create an OCR draft only')
+    parser.add_argument('--output-dir', help='Existing parent directory for the reviewed parts folder')
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO
     splitter = BigBandChartSplitter(config_path=args.config, log_level=level)
-    splitter.process_file(Path(args.path), dump=args.dump)
+    if args.page_map:
+        if args.dump:
+            parser.error("--dump is only available when creating an OCR draft")
+        splitter.split_from_map(Path(args.path), Path(args.page_map), args.output_dir)
+    else:
+        if args.output_dir:
+            parser.error("--output-dir requires --page-map")
+        splitter.process_file(Path(args.path), dump=args.dump)

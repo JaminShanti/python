@@ -1,0 +1,11 @@
+# Replace with the hostnames to search, including their subdomains.
+target_domains:
+  - example.com
+input_file: 'music_output\queries.txt'
+download_folder: 'music_output\chart_downloads'
+
+# Optional URL adjustments for sites that need them:
+# host_aliases:
+#   old.example.com: example.com
+# force_https: true
+# plus_as_space: true
