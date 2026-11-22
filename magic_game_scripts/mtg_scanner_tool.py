@@ -11,7 +11,10 @@ import requests
 import yaml
 from playwright.sync_api import sync_playwright
 
-from mtg_deck_scraper import TopDeckDeckScraper
+if __package__:
+    from .mtg_deck_scraper import TopDeckDeckScraper
+else:
+    from mtg_deck_scraper import TopDeckDeckScraper
 
 
 class MTGDeckScanner:

@@ -202,11 +202,11 @@ class MTGMightyMeepleScanner:
             print("=" * 60)
             print("\nHow to load cards into the scanner:\n")
             print("  1. Import a Decklist Text File:")
-            print("     python review_mighty_meeply.py my_deck.txt\n")
+            print("     python magic_game_scripts\\review_mighty_meeply.py my_deck.txt\n")
             print("     Supported formats: Moxfield, Archidekt, TCGplayer,")
             print("     MTG Arena, or any plain list of card names.\n")
             print("  2. Manual Configuration:")
-            print("     Add targets directly to 'meeple_cache/meeple_config.yaml'")
+            print(f"     Add targets directly to '{self.cfg_path}'")
             print("=" * 60 + "\n")
             return
 

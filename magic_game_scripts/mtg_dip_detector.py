@@ -2,6 +2,7 @@ import gzip, json, logging, os, pickle, re
 from datetime import datetime, timedelta
 import numpy as np, pandas as pd, requests
 import warnings
+from pathlib import Path
 from requests.exceptions import RequestsDependencyWarning
 warnings.filterwarnings("ignore", category=RequestsDependencyWarning)
 from bs4 import BeautifulSoup
@@ -20,10 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class MTGDipDetector:
-    def __init__(self, cache_dir='mtg_cache', output_dir='mtg_dip_output', high_window=45, min_dip=40.0,
+    def __init__(self, cache_dir=None, output_dir=None, high_window=45, min_dip=40.0,
                  min_drop=1.00, min_set_age=60, min_historical_high=4.00):
-        self.cache_dir = os.path.abspath(cache_dir)
-        self.output_dir = os.path.abspath(output_dir) # New output directory
+        base_dir = Path(__file__).resolve().parent
+        self.cache_dir = os.path.abspath(cache_dir if cache_dir is not None else base_dir / 'mtg_cache')
+        self.output_dir = os.path.abspath(output_dir if output_dir is not None else base_dir / 'mtg_dip_output')
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True) # Ensure output directory exists
 

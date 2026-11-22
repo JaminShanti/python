@@ -1,17 +1,27 @@
-import importlib.util, pathlib, sys
-
-repo_root = pathlib.Path(__file__).resolve().parents[1]
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
-spec = importlib.util.spec_from_file_location(
-    "mtg_scanner_tool", repo_root / "mtg_scanner_tool.py"
-)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from magic_game_scripts import mtg_scanner_tool as module
+from pathlib import Path
 
 def test_imports():
     assert module is not None
+
+
+def test_default_cache_is_script_relative(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CACHE_ROOT", raising=False)
+    monkeypatch.setattr(module.MTGDeckScanner, "_fetch_game_changers", lambda self: set())
+    monkeypatch.setattr(module.MTGDeckScanner, "_load_config_urls", lambda self: [])
+    monkeypatch.setattr(module.MTGDeckScanner, "_load_exclusions", lambda self: {})
+    monkeypatch.setattr(module.MTGDeckScanner, "_load_bracket_2_exclusions", lambda self: {})
+    monkeypatch.setattr(module.MTGDeckScanner, "_load_cache", lambda self, *args, **kwargs: {})
+    scanner = module.MTGDeckScanner()
+    assert Path(scanner.cache_dir) == Path(module.__file__).resolve().parent / "mtg_scanner_cache"
+
+
+def test_cache_root_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("CACHE_ROOT", str(tmp_path))
+    monkeypatch.setattr(module.MTGDeckScanner, "_fetch_game_changers", lambda self: set())
+    scanner = module.MTGDeckScanner()
+    assert Path(scanner.cache_dir) == tmp_path / "mtg_scanner_cache"
 
 
 def test_main_enables_debug_from_command_line(monkeypatch):
@@ -192,6 +202,16 @@ def test_auto_scroll_stops_after_maximum_attempts(capsys):
     class GrowingPage:
         def __init__(self):
             self.scrolls = 0
+
+        @property
+        def first(self):
+            return self
+
+        def locator(self, selector):
+            return self
+
+        def count(self):
+            return 0
 
         def evaluate(self, script):
             if script.startswith("window.scrollTo"):

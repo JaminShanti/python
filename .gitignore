@@ -12,3 +12,10 @@ __pycache__/
 /meeple_cache/
 /music_sheet_scripts/music_output/
 /music_sheet_scripts/music_cache/chart_downloader.yaml
+/magic_game_scripts/mtg_cache/
+/magic_game_scripts/mtg_scanner_cache/
+/magic_game_scripts/meeple_cache/
+/magic_game_scripts/mtg_dip_output/*
+!/magic_game_scripts/mtg_dip_output/MTG_Dips_2026-07-25_15-22.pdf
+!/magic_game_scripts/mtg_dip_output/MTG_Dips_2026-07-25_15-22.png
+!/magic_game_scripts/mtg_dip_output/TCGplayer_Import_2026-07-25_15-22.txt

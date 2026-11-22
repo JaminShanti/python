@@ -16,8 +16,8 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ## Recent Updates
 
-* Added `review_mighty_meeply.py`, a Mighty Meeple inventory scanner that imports decklists, caches product data, and builds cart links for viable singles.
-* Improved `mtg_scanner_tool.py` with stricter filtering for basic lands, decklist noise, and bracketed card names.
+* Added `magic_game_scripts\review_mighty_meeply.py`, a Mighty Meeple inventory scanner that imports decklists, caches product data, and builds cart links for viable singles.
+* Improved `magic_game_scripts\mtg_scanner_tool.py` with stricter filtering for basic lands, decklist noise, and bracketed card names.
 * Refreshed the repo layout and documentation so the MTG market tools and automation scripts are easier to discover and use.
 * Improved music-part OCR to retry sparse pages and recognize Vocal/Voce labels from the instrument configuration.
 
@@ -87,17 +87,8 @@ Repo: `git@github.com:JaminShanti/python.git` (branch: `master`)
 
 ### Market Monitoring & Hobby Projects
 
-* **`mtg_dip_detector.py`**: Tracks the market value of Magic: The Gathering cards to detect price retracements and identify buying opportunities, particularly useful for monitoring Reserved List assets. Generates PDF and PNG reports of detected price dips.
-* **`mtg_scanner_tool.py`**: A custom market data scanner designed to evaluate collection values and optimize deck builds for the Commander format (e.g., Rocco, Cabaretti Caterer).
-  - Supports **caching** for faster subsequent runs.
-  - Uses an external `excluded_cards.txt` file for easy management of cards to ignore.
-  - Retrieves real-time pricing data from multiple sources.
-  - Includes improved bracketed deck-entry handling and stricter filtering for unwanted basic-land / label noise.
-  - Debug logging is off by default for clean deck output. To show deck parsing and lookup diagnostics, run:
-    ```python
-    python .\mtg_scanner_tool.py --debug
-    ```
-* **`review_mighty_meeply.py`**: Imports a decklist, harvests current inventory from Mighty Meeple, filters out unwanted names/conditions/basic lands, and produces cart permalinks for any matched single-card targets.
+* **`magic_game_scripts\`**: Magic: The Gathering deck analysis, price-dip
+  reports and Mighty Meeple inventory tools. See the [Magic tools README](magic_game_scripts/README.md).
 
 ### Document Processing
 
