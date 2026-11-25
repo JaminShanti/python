@@ -229,3 +229,16 @@ def test_auto_scroll_stops_after_maximum_attempts(capsys):
 
     assert page.scrolls == 3
     assert "reached its 3-step limit" in capsys.readouterr().out
+
+
+def test_find_new_cards_reports_additions_after_first_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("CACHE_ROOT", str(tmp_path))
+    scanner = module.MTGDeckScanner.__new__(module.MTGDeckScanner)
+    scanner.snapshot_file = str(tmp_path / "snapshots.json")
+
+    first = {"Creature": ["1 Old Card"], "Land": ["1 Forest"]}
+    assert scanner._find_new_cards("Cmdr|None", first) is None
+
+    second = {"Creature": ["1 Old Card", "1 New Card"], "Land": ["1 Forest"]}
+    assert scanner._find_new_cards("Cmdr|None", second) == [("New Card", "Creature")]
+    assert scanner._find_new_cards("Cmdr|None", second) == []

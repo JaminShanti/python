@@ -29,7 +29,11 @@ The scanner uses Scryfall and deck data, and caches results in
 `mtg_scanner_cache\excluded_cards.txt`; `old name -> replacement` entries
 specify substitutions. Optional `bracket_2_exclusions.yaml` can group lists of
 card names under `bracket_2_exclusions` by reason. Setting `CACHE_ROOT` moves
-the scanner's `mtg_scanner_cache` under that directory. The companion
+the scanner's `mtg_scanner_cache` under that directory. Each
+run saves the final list per commander and bracket in
+`mtg_scanner_cache\decklist_snapshots.json`; later runs print a
+"New Since Last Run" section at the top of the list with cards that were not in
+the previous run (nothing is shown on the first run). The companion
 `mtg_deck_scraper.py` is used by the scanner and is not a standalone CLI.
 
 ## Price dip detector

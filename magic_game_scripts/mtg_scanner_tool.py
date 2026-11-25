@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import pickle
 import re
@@ -39,6 +40,7 @@ class MTGDeckScanner:
         self.scryfall_cache_file = os.path.join(self.cache_dir, "scryfall_data.pkl")
         self.deck_cache_file = os.path.join(self.cache_dir, "topdeck_deck_data.pkl")
         self.excluded_file = os.path.join(self.cache_dir, "excluded_cards.txt")
+        self.snapshot_file = os.path.join(self.cache_dir, "decklist_snapshots.json")
 
         self.type_order = [
             "Commander", "Creature", "Artifact", "Enchantment",
@@ -242,6 +244,36 @@ class MTGDeckScanner:
     def _save_cache(self, cache_dict, filepath):
         with open(filepath, "wb") as f:
             pickle.dump(cache_dict, f)
+
+    def _load_snapshots(self):
+        try:
+            with open(self.snapshot_file, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _find_new_cards(self, snapshot_key, deck_list):
+        """Return cards absent from the previous run's list and save the current list.
+
+        Returns None when no earlier snapshot exists, so a first run is not
+        reported as entirely new.
+        """
+        current = {
+            entry.split(" ", 1)[1]: category
+            for category, entries in deck_list.items()
+            for entry in entries
+        }
+        snapshots = self._load_snapshots()
+        previous = snapshots.get(snapshot_key)
+        snapshots[snapshot_key] = sorted(current)
+        try:
+            with open(self.snapshot_file, "w", encoding="utf-8") as f:
+                json.dump(snapshots, f, indent=2)
+        except OSError as e:
+            print(f"   -> Warning: Failed to save decklist snapshot: {e}")
+        if previous is None:
+            return None
+        return sorted((name, cat) for name, cat in current.items() if name not in set(previous))
 
     def auto_scroll_to_bottom(self, page, max_scrolls=30):
         last_height = page.evaluate("document.body.scrollHeight")
@@ -937,6 +969,11 @@ class MTGDeckScanner:
         deck_list["Land"] = [f"{count} {name}" for name, count in final_land_counts.items()]
 
         print(f"\n\n### {commander_name} Meta Optimized Decklist")
+        new_cards = self._find_new_cards(f"{commander_name}|{bracket}", deck_list)
+        if new_cards:
+            print(f"\n### New Since Last Run ({len(new_cards)})")
+            for name, category in new_cards:
+                print(f"{name} [{category}]")
         for category in self.type_order:
             cards_in_cat = deck_list[category]
             if cards_in_cat:
