@@ -25,7 +25,18 @@ python .\magic_game_scripts\mtg_scanner_tool.py --debug
 ```
 
 The scanner uses Scryfall and deck data, and caches results in
-`mtg_scanner_cache`. Add excluded card names, one per line, to
+`mtg_scanner_cache`. Each run starts with the latest three-month window and
+widens the event-size and time filters only when fewer than 30 usable decklists
+are available. Separate tournament entries count separately, even for identical
+decklists; player identity is not verified. Each search window reports a
+summary; use `--debug` for individual deck diagnostics. TopDeck listing URLs are cached for
+seven days. It warns if the maximum range still has fewer than 30. The land
+target is the source median limited to 27-31, counting spell/land cards as lands;
+the instant target is calculated from the usable source decks. When too few
+eligible spells are available to fill a 100-card deck without exceeding the
+land target, the scanner warns and leaves the deck incomplete. Older deck caches
+are refreshed to correct previously misparsed card names, so the first run after
+upgrading may take longer. Add excluded card names, one per line, to
 `mtg_scanner_cache\excluded_cards.txt`; `old name -> replacement` entries
 specify substitutions. Optional `bracket_2_exclusions.yaml` can group lists of
 card names under `bracket_2_exclusions` by reason. Setting `CACHE_ROOT` moves

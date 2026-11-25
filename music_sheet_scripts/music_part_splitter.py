@@ -146,12 +146,83 @@ class BigBandChartSplitter:
         return best_inst if highest_score > 0 else None
 
     def _get_page_instrument(self, image, text):
+        lower_text = text.lower()
+        normalized = re.sub(r"[^a-z0-9\n]+", " ", lower_text)
+        normalized = re.sub(r"\b(one|first|1st|ist|let|lot|lst)\b", " 1 ", normalized)
+        normalized = re.sub(r"\b(two|second|2nd|too|tno)\b", " 2 ", normalized)
+        normalized = re.sub(r"\b(three|third|3rd)\b", " 3 ", normalized)
+        normalized = re.sub(r"\b(four|fourth|4th)\b", " 4 ", normalized)
+
+        instrument_names = (
+            "alto sax", "tenor sax", "baritone sax", "bari sax",
+            "trumpet", "trombone", "piano", "drums", "bass", "guitar",
+        )
+        instrument_hits = sum(
+            1 for instrument in instrument_names
+            if re.search(r"\b" + re.escape(instrument) + r"\b", lower_text)
+        )
+        if instrument_hits >= 3:
+            return "Conductor Score"
+
+        direct_families = (
+            (r"\balto\s+sax(?:ophone)?\b", "Alto Sax", ("I", "II", "III", "IV")),
+            (r"\btenor\s+sax(?:ophone)?\b", "Tenor Sax", ("I", "II", "III", "IV")),
+            (r"\b(?:baritone|bari)\s+sax(?:ophone)?\b", "Baritone Sax", (None,)),
+            (r"\btrumpet\b", "Trumpet", ("I", "II", "III", "IV")),
+            (r"\btrombone\b", "Trombone", ("I", "II", "III", "IV")),
+        )
+        for family_pattern, family, suffixes in direct_families:
+            for line in normalized.splitlines():
+                match = re.search(
+                    r"\b([1-4])\d*[ \t]+" + family_pattern
+                    + r"|" + family_pattern + r"[ \t]+([1-4])\b", line
+                )
+                if match:
+                    if family == "Baritone Sax":
+                        return family
+                    number = int(match.group(1) or match.group(2))
+                    return f"{family} {suffixes[number - 1]}"
+                if family == "Baritone Sax" and re.search(family_pattern, line):
+                    return family
+
+        simple_names = (
+            (r"\bpiano\b", "Piano"),
+            (r"\b(?:drums|drum set|percussion)\b", "Drums"),
+            (r"\bbass\b", "Bass"),
+            (r"\bguitar\b", "Guitar"),
+            (r"\bvibes\b", "Vibes"),
+            (r"\b(?:vocal|vocals|voice|voce)\b", "Vocal"),
+        )
+        for pattern, name in simple_names:
+            if re.search(pattern, normalized):
+                return name
+
+        generic_labels = (
+            r"\btrombone\b",
+            r"\btrumpet\b",
+            r"\balto sax(?:ophone)?\b",
+            r"\btenor sax(?:ophone)?\b",
+        )
+        numbered_or_ordinal = re.compile(
+            r"(?:1st|2nd|3rd|4th|\b[1-4]\b|\bi{1,4}\b)"
+        )
+        for generic in generic_labels:
+            if re.search(generic, lower_text) and not numbered_or_ordinal.search(lower_text):
+                return None
         detected = self._get_best_match(text)
         if detected is None:
-            alternate_text = pytesseract.image_to_string(image.convert('L'), config='--psm 11').lower()
-            detected = self._get_best_match(alternate_text)
-            if detected:
-                self.logger.debug(f"Alternate OCR detected part: {detected}")
+            grayscale = image.convert('L')
+            for psm in (11, 12):
+                alternate_text = pytesseract.image_to_string(
+                    grayscale,
+                    config=f'--psm {psm}',
+                ).lower()
+                detected = self._get_best_match(alternate_text)
+                if detected:
+                    self.logger.debug(
+                        f"Alternate OCR PSM {psm} detected part: {detected}"
+                    )
+                    break
         return detected
 
     def _run_wizard(self, page_index, text):
@@ -203,9 +274,115 @@ class BigBandChartSplitter:
             except ValueError:
                 print("Please enter a valid number.")
 
+    @staticmethod
+    def _standard_part_name(name):
+        if not name:
+            return None
+        aliases = {
+            "Conductor Score": "Conductor",
+            "1st Alto Sax": "Alto Sax I",
+            "2nd Alto Sax": "Alto Sax II",
+            "1st Tenor Sax": "Tenor Sax I",
+            "2nd Tenor Sax": "Tenor Sax II",
+            "Bari Sax": "Baritone Sax",
+            "Trumpet 1": "Trumpet I",
+            "Trumpet 2": "Trumpet II",
+            "Trumpet 3": "Trumpet III",
+            "Trumpet 4": "Trumpet IV",
+            "Trombone 1": "Trombone I",
+            "Trombone 2": "Trombone II",
+            "Trombone 3": "Trombone III",
+            "Trombone 4": "Trombone IV",
+        }
+        return aliases.get(name, name)
+
+    @classmethod
+    def _improve_suggestions(cls, suggestions):
+        """Fill only locally unambiguous OCR gaps before creating a draft."""
+        improved = [
+            {
+                "page": suggestion["page"],
+                "suggested_instrument": suggestion.get("suggested_instrument"),
+            }
+            for suggestion in suggestions
+        ]
+
+        names = [item["suggested_instrument"] for item in improved]
+        solo_indexes = [
+            index for index, name in enumerate(names)
+            if name == "Solo Tenor Sax"
+        ]
+        if len(solo_indexes) > 8:
+            start = solo_indexes[0]
+            end = solo_indexes[-1]
+            if end - start + 1 == len(solo_indexes):
+                for index in solo_indexes:
+                    names[index] = None
+
+        if names and names[0] == "Conductor Score":
+            for index in range(1, len(names)):
+                if names[index] is None:
+                    names[index] = "Conductor"
+                else:
+                    break
+
+        leading_end = 0
+        while leading_end < len(names) and names[leading_end] is None:
+            leading_end += 1
+        if leading_end > 0 and leading_end < len(names):
+            first_known = names[leading_end]
+            if first_known in {
+                "Alto Sax I", "1st Alto Sax",
+                "Alto Sax II", "2nd Alto Sax",
+            }:
+                for index in range(leading_end):
+                    names[index] = "Alto Sax I"
+
+        for index, name in enumerate(names):
+            if name is not None:
+                continue
+            left = names[index - 1] if index > 0 else None
+            right = names[index + 1] if index + 1 < len(names) else None
+
+            if left is not None and right == left:
+                names[index] = left
+            elif left is not None and right is not None:
+                left_family = re.sub(r"\b(?:I|II|III|IV|1|2|3|4)$", "", str(left)).strip()
+                right_family = re.sub(r"\b(?:I|II|III|IV|1|2|3|4)$", "", str(right)).strip()
+                if left_family and left_family == right_family:
+                    names[index] = left
+                elif right in {"Drums", "Percussion"}:
+                    names[index] = right
+                elif left in {"Piano", "Guitar", "Bass", "Drums", "Vibes", "Vocal"}:
+                    names[index] = left
+            elif left is None and right is not None:
+                if right in {"Alto Sax II", "2nd Alto Sax"}:
+                    names[index] = "Alto Sax I"
+            elif left is not None:
+                if len(names) >= 3:
+                    names[index] = left
+
+        for item, name in zip(improved, names):
+            item["suggested_instrument"] = name
+        return improved
+
+    @classmethod
+    def _auto_parts(cls, suggestions):
+        parts = {}
+        excluded = {}
+        for suggestion in suggestions:
+            name = cls._standard_part_name(suggestion.get("suggested_instrument"))
+            page = suggestion["page"]
+            if name:
+                parts.setdefault(name, []).append(page)
+            else:
+                excluded.setdefault("OCR not identified", []).append(page)
+        return parts, excluded
+
     def process_file(self, file_path, dump=False):
         """Create an OCR draft. Suggestions never become page assignments."""
         file_path = Path(file_path)
+        self.logger.info("Starting OCR draft for: %s", file_path)
         draft_path = file_path.with_name(f"{file_path.stem}_page_map.yaml")
         dump_path = file_path.with_name(f"{file_path.stem}_OCR_DUMP.txt")
         if draft_path.exists() or (dump and dump_path.exists()):
@@ -214,8 +391,8 @@ class BigBandChartSplitter:
         source_hash = self._file_hash(file_path)
         suggestions, raw_ocr = [], []
         for page in range(1, page_count + 1):
-            image = convert_from_path(file_path, dpi=200, first_page=page, last_page=page)[0]
-            header = image.crop((0, 0, image.width, image.height // 3)).convert('L')
+            image = convert_from_path(file_path, dpi=300, first_page=page, last_page=page)[0]
+            header = image.crop((0, 0, image.width, image.height * 2 // 5)).convert('L')
             text = pytesseract.image_to_string(header, config='--psm 3')
             detected = self._get_page_instrument(header, text)
             if self.conductor_regex.search(text.lower()):
@@ -225,12 +402,18 @@ class BigBandChartSplitter:
             self.logger.info("Page %s/%s | OCR suggestion: %s", page, page_count, detected)
         if self._file_hash(file_path) != source_hash:
             raise RuntimeError("Source PDF changed during OCR; no draft was written.")
+        suggestions = self._improve_suggestions(suggestions)
         draft = {
             "source_file": file_path.name, "source_sha256": source_hash,
             "page_count": page_count, "song_number": "", "song_title": "",
             "arrangement": "", "parts": {}, "excluded_pages": {},
             "ocr_suggestions": suggestions,
         }
+        suggested_parts, suggested_exclusions = self._auto_parts(suggestions)
+        if suggested_parts:
+            draft["suggested_parts"] = suggested_parts
+        if suggested_exclusions:
+            draft["suggested_exclusions"] = suggested_exclusions
         with draft_path.open("x", encoding="utf-8") as f:
             yaml.safe_dump(draft, f, sort_keys=False, allow_unicode=True)
         if dump:
@@ -259,6 +442,7 @@ class BigBandChartSplitter:
 
     def split_from_map(self, source, map_path, output_parent=None):
         source, map_path = Path(source), Path(map_path)
+        self.logger.info("Starting reviewed split for: %s (page map: %s)", source, map_path)
         with map_path.open(encoding="utf-8") as f:
             mapping = yaml.load(f, Loader=UniqueKeyLoader)
         if not isinstance(mapping, dict):
@@ -273,8 +457,12 @@ class BigBandChartSplitter:
             raise ValueError("Song number must be a number, optionally followed by a letter or -number.")
         title = self._safe_component(mapping.get("song_title"), "Song title")
         parts, excluded = mapping.get("parts"), mapping.get("excluded_pages")
+        using_suggestions = parts == {} and bool(mapping.get("suggested_parts"))
+        if using_suggestions:
+            parts = mapping["suggested_parts"]
+            self.logger.warning("Using suggested parts; verify them against the source PDF before using the output.")
         if not isinstance(parts, dict) or not parts or not isinstance(excluded, dict):
-            raise ValueError("Provide parts and an excluded_pages mapping, even if exclusions are empty.")
+            raise ValueError("Provide parts or suggested_parts and an excluded_pages mapping, even if exclusions are empty.")
         seen, names = set(), set()
         for group, entries in (("parts", parts), ("excluded_pages", excluded)):
             for label, pages in entries.items():
@@ -297,6 +485,10 @@ class BigBandChartSplitter:
         parent = Path(output_parent) if output_parent else source.parent
         if not parent.is_dir():
             raise FileNotFoundError(f"Output directory does not exist: {parent}")
+        archive = parent / source.name
+        move_source = source.parent.resolve() != parent.resolve()
+        if move_source and archive.exists():
+            raise FileExistsError(f"Source PDF destination already exists: {archive}")
         out_dir = parent / f"{number} - {title}_parts"
         if out_dir.exists():
             raise FileExistsError(f"Output already exists: {out_dir}")
@@ -308,7 +500,13 @@ class BigBandChartSplitter:
                     writer.add_page(reader.pages[page - 1])
                 with (temporary / f"{name} - {number} {title}.pdf").open("xb") as f:
                     writer.write(f)
-            shutil.copyfile(map_path, temporary / "page_map.yaml")
+            if using_suggestions:
+                output_mapping = dict(mapping)
+                output_mapping["parts"] = parts
+                with (temporary / "page_map.yaml").open("x", encoding="utf-8") as f:
+                    yaml.safe_dump(output_mapping, f, sort_keys=False, allow_unicode=True)
+            else:
+                shutil.copyfile(map_path, temporary / "page_map.yaml")
             if self._file_hash(source) != source_hash:
                 raise RuntimeError("Source PDF changed during splitting.")
             temporary.rename(out_dir)
@@ -316,6 +514,29 @@ class BigBandChartSplitter:
             shutil.rmtree(temporary)
             raise
         self.logger.info("Saved %s reviewed parts to %s", len(parts), out_dir)
+        if move_source:
+            created = False
+            try:
+                with source.open("rb") as src:
+                    with archive.open("xb") as dst:
+                        created = True
+                        shutil.copyfileobj(src, dst)
+                if self._file_hash(archive) != source_hash or self._file_hash(source) != source_hash:
+                    raise RuntimeError("Source PDF changed or archive copy did not match.")
+            except Exception as exc:
+                if created:
+                    archive.unlink()
+                raise RuntimeError(
+                    f"Parts saved to {out_dir}, but the original was not moved from {source}: {exc}"
+                ) from exc
+            try:
+                source.unlink()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Parts saved to {out_dir} and original copied to {archive}, "
+                    f"but the source could not be removed from {source}: {exc}"
+                ) from exc
+            self.logger.info("Moved source PDF to: %s", archive)
         return out_dir
 
     def _sanitize_filename(self, name):

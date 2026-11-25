@@ -8,6 +8,53 @@ Run the examples from the repository root in PowerShell. Install the repository
 dependencies, Tesseract and Poppler as described in the main README. Dropbox
 recovery also requires `rclone` configured with access to the band's Dropbox.
 
+## Chart-by-chart workflow
+
+The current workflow uses
+`C:\Users\Radjammin\Desktop\Reflections_Source_Music_charts` as the source
+folder, its `processed` subfolder for completed splits, and `not_processing`
+for charts set aside. Substitute your own paths as needed.
+
+1. Generate OCR drafts for source PDFs that do not already have drafts:
+   ```powershell
+   cd D:\apps\repositories\github\JaminShanti\python
+   Get-ChildItem "C:\Users\Radjammin\Desktop\Reflections_Source_Music_charts\*.pdf" -File |
+     ForEach-Object {
+       python ".\music_sheet_scripts\music_part_splitter.py" $_.FullName --dump
+     }
+   ```
+   Each PDF gets a `_page_map.yaml` and an `_OCR_DUMP.txt` beside it. The
+   splitter refuses to overwrite an existing draft or dump, so check the log
+   for failures rather than assuming a rerun regenerated everything.
+2. Select one chart for review. Check its title, song number and arranger
+   against the song library and existing Dropbox parts; don't guess a number
+   or assume that two recordings of the same title use the same arrangement.
+   Review every source page visually, including continuation pages and
+   alternate keys. Correct the map as described below; OCR suggestions and
+   complete page coverage alone are not proof that assignments are correct.
+   Set aside charts that are unreadable, incomplete, unneeded or uncertain
+   instead of forcing them through the split.
+3. Run the reviewed split for that chart using the command in **Split a source
+   PDF**. With `--output-dir` set to the existing `processed` folder, the
+   splitter creates the parts folder and moves the original PDF there after a
+   successful split.
+4. Review the resulting parts against the archived source for page order,
+   completeness and legibility. Compare them with Dropbox by title,
+   arrangement, instrument and completeness. Do not overwrite an existing
+   part or assume a different scan is a different arrangement. Upload only
+   the needed, reviewed parts to the appropriate instrument folders, and
+   download-verify each upload. Resolve unclear destinations, alternate keys,
+   conflicting files or questionable scan quality before uploading.
+5. After review and any upload, remove that chart's source-directory OCR dump
+   and page map if they are no longer needed. Keep the resolved `page_map.yaml`
+   inside the processed parts folder. If setting a chart aside, move its PDF
+   to `not_processing` without overwriting an existing file; remove its draft
+   and dump only after the move succeeds and they are no longer needed.
+
+The manual review and upload workflow does not update the missing-parts
+inventories. Use the recovery workflow below when those inventories need to be
+updated, or reconcile them separately after verifying the Dropbox files.
+
 ## Split a source PDF
 
 1. Generate an OCR draft:
@@ -15,11 +62,14 @@ recovery also requires `rclone` configured with access to the band's Dropbox.
    python .\music_sheet_scripts\music_part_splitter.py "C:\Music\My Chart.pdf" --dump
    ```
    This creates `My Chart_page_map.yaml` beside the PDF. OCR labels are
-   suggestions only; they do not assign pages.
-2. Open the PDF and edit the map. Leave `source_file`, `source_sha256` and
-   `page_count` unchanged. Set the quoted song number and title, assign every
-   complete part its one-based pages, and explain unrelated or incomplete pages
-   under `excluded_pages`. For example:
+   suggestions only; they do not assign pages. The log names the source PDF
+   before processing begins and reports OCR progress for each page.
+2. Open the PDF and review the map. Leave `source_file`, `source_sha256` and
+   `page_count` unchanged and set the quoted song number and title. If all
+   `suggested_parts` are correct, leave `parts: {}`; the splitter will use the
+   suggestions directly. Otherwise edit `parts` to assign the correct one-based
+   pages. Explain unrelated or incomplete pages under `excluded_pages`. For
+   example:
    ```yaml
    song_number: "30b"
    song_title: Satin Doll
@@ -31,16 +81,21 @@ recovery also requires `rclone` configured with access to the band's Dropbox.
      Unrelated pages: [5, 6]
    ```
    The page numbers are illustrative. Examine all pages for continuity, mixed
-   arrangements and incorrect OCR. Leave `ocr_suggestions` as reference only.
+   arrangements and incorrect OCR. `ocr_suggestions` is reference only;
+   unidentified pages in `suggested_exclusions` are not excluded automatically.
+   Assign or explicitly exclude every page before splitting.
 3. Extract the reviewed parts:
    ```powershell
    python .\music_sheet_scripts\music_part_splitter.py "C:\Music\My Chart.pdf" --page-map "C:\Music\My Chart_page_map.yaml" --output-dir "C:\Music\processed"
    ```
    The splitter checks the source hash, complete page coverage and duplicate
    pages, then creates `30b - Satin Doll_parts` with band-standard names and a
-   copy of the page map. It refuses to overwrite an existing folder. Omit
-   `--output-dir` to create the folder beside the source. It does not move the
-   source or update inventories.
+   copy of the page map. When using `suggested_parts`, the copied map records
+   them as `parts` for downstream recovery; the source map remains unchanged.
+   It refuses to overwrite an existing folder or source PDF. After a successful
+   split, it moves the original PDF to the output parent; the source map and OCR
+   dump remain where they are. Omit `--output-dir` to create the folder beside
+   the source without moving it. It does not update inventories.
 
 ## Recover missing parts
 

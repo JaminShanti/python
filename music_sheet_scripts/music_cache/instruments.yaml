@@ -176,6 +176,13 @@ instruments:
   aliases:
   - vibes
   - vibraphone
+- name: Clarinet
+  aliases:
+  - clarinet
+  - cl.
+- name: Solo Tenor Sax
+  aliases:
+  - solo bb tenor saxophone
 - name: Vocal
   aliases:
   - vocal

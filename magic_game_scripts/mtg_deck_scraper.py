@@ -4,6 +4,7 @@ import time
 
 class TopDeckDeckScraper:
     NEGATIVE_CACHE_TTL = 24 * 60 * 60
+    CACHE_VERSION = 2
 
     def __init__(self, deck_cache, deck_cache_file, save_cache, debug=False):
         self.deck_cache = deck_cache
@@ -25,8 +26,8 @@ class TopDeckDeckScraper:
                     return cached_cards, cached_basics
                 del self.deck_cache[url]
                 self._debug(f"   -> [DEBUG] Retrying expired incomplete deck cache: {url}")
-            else:
-                cached_cards, cached_basics = cached_entry
+            elif len(cached_entry) == 4 and cached_entry[3] == self.CACHE_VERSION:
+                cached_cards, cached_basics, _, _ = cached_entry
                 if sum(cached_basics.values()) > 40:
                     self._debug(
                         f"   -> [DEBUG] Ignoring malformed cached deck from {url}: "
@@ -36,6 +37,9 @@ class TopDeckDeckScraper:
                 else:
                     self._debug(f"   -> [DEBUG] Using cached deck: {url}")
                     return cached_cards, cached_basics
+            else:
+                del self.deck_cache[url]
+                self._debug(f"   -> [DEBUG] Refreshing outdated deck cache: {url}")
 
         try:
             for attempt in range(1, 3):
@@ -73,7 +77,9 @@ class TopDeckDeckScraper:
                 if not line:
                     continue
 
-                match = re.match(r'^(\d+)\s*[xX]\s*(.+)$', line)
+                match = re.match(r'^(\d+)[xX]\s*(.+)$', line)
+                if match is None:
+                    match = re.match(r'^(\d+)\s+[xX]\s+(.+)$', line)
                 if match is None:
                     match = re.match(r'^(\d+)\s+(.+)$', line)
                 if match:
@@ -117,7 +123,7 @@ class TopDeckDeckScraper:
                 return [], self._empty_basic_counts()
 
             result = (list(found), basic_counts)
-            self.deck_cache[url] = result
+            self.deck_cache[url] = (*result, time.time(), self.CACHE_VERSION)
             self.save_cache(self.deck_cache, self.deck_cache_file)
             return result
 

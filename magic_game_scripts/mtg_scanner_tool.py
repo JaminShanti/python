@@ -6,7 +6,7 @@ import re
 import time
 from collections import Counter
 from statistics import median
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 import requests
 import yaml
@@ -60,8 +60,7 @@ class MTGDeckScanner:
         self.b2_exclusions = self._load_bracket_2_exclusions()
         self.game_changers = self._fetch_game_changers()
 
-        # 3-day expiration (259200 seconds)
-        self.topdeck_cache = self._load_cache(self.urls_cache_file, ttl_seconds=259200)
+        self.topdeck_cache = self._load_cache(self.urls_cache_file, ttl_seconds=7 * 86400)
         self.deck_cache = self._load_cache(self.deck_cache_file)
         self.scryfall_cache = self._load_cache(self.scryfall_cache_file)
         self.deck_scraper = TopDeckDeckScraper(
@@ -382,6 +381,44 @@ class MTGDeckScanner:
             "Artifact",
         )
 
+    def _select_recent_decks(self, page, commander_url):
+        search_steps = [
+            ("THREE_MONTHS", 50), ("THREE_MONTHS", 30), ("THREE_MONTHS", 16),
+            ("SIX_MONTHS", 50), ("SIX_MONTHS", 30), ("SIX_MONTHS", 16),
+            ("ONE_YEAR", 50), ("ONE_YEAR", 30), ("ONE_YEAR", 16),
+            ("ALL_TIME", 0),
+        ]
+        parsed = urlparse(commander_url)
+        other_params = [
+            (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key not in ("timePeriod", "minEventSize")
+        ]
+        attempted = {}
+        urls = []
+        valid = []
+
+        for time_period, min_size in search_steps:
+            query = urlencode(other_params + [
+                ("timePeriod", time_period), ("minEventSize", str(min_size)),
+            ])
+            target_url = urlunparse(parsed._replace(query=query))
+            print(f"   -> Checking {time_period}, {min_size}+ players...", flush=True)
+            urls = list(dict.fromkeys(self.get_topdeck_urls(page, target_url)))
+            valid = []
+            for i, url in enumerate(urls, 1):
+                self._debug(f"   -> [DEBUG] Processing deck {i}/{len(urls)}.")
+                if url not in attempted:
+                    attempted[url] = self.deck_scraper.scrape_deck_data(page, url)
+                cards, basics = attempted[url]
+                if cards or sum(basics.values()):
+                    valid.append((cards, basics))
+            print(f"   -> {time_period}, {min_size}+ players: {len(valid)}/{len(urls)} usable decklists.")
+            if len(valid) >= 30:
+                break
+        if len(valid) < 30:
+            print(f"Warning: Only {len(valid)} usable decklists found across the maximum range.")
+        return urls, valid
+
     def analyze_commander(self, page, commander_url, bracket=None):
         name_match = re.search(r"commander/([^?]+)", commander_url)
         commander_name = unquote(name_match.group(1)) if name_match else "Unknown Commander"
@@ -389,86 +426,10 @@ class MTGDeckScanner:
         bracket_text = f" (Bracket {bracket})" if bracket else ""
         print(f"\n{'=' * 60}\nGathering Consensus Data for: {commander_name}{bracket_text}\n{'=' * 60}")
 
-        print("   -> Testing configured URL...")
-        urls = self.get_topdeck_urls(page, commander_url)
-        final_query_used = ""
-
-        parsed_initial = urlparse(commander_url)
-        initial_qs = parse_qs(parsed_initial.query)
-        is_max_range = (
-            initial_qs.get("timePeriod") == ["ALL_TIME"]
-            and initial_qs.get("minEventSize", ["0"]) == ["0"]
-        )
-
-        if len(urls) >= 30 or is_max_range:
-            print(f"   -> Configured URL valid! Found {len(urls)} decks.")
-            final_query_used = commander_url
-        else:
-            print(f"   -> Configured URL yielded only {len(urls)} decks. Falling back to cascading search...")
-            urls = []
-
-            search_steps = [
-                ("THREE_MONTHS", 50),
-                ("THREE_MONTHS", 30),
-                ("THREE_MONTHS", 16),
-                ("SIX_MONTHS", 50),
-                ("SIX_MONTHS", 30),
-                ("SIX_MONTHS", 16),
-                ("ONE_YEAR", 50),
-                ("ONE_YEAR", 30),
-                ("ONE_YEAR", 16),
-                ("ALL_TIME", 0),
-            ]
-
-            base_parsed = urlparse(commander_url)
-            base_path = base_parsed.path
-
-            for time_period, min_size in search_steps:
-                query_data = {"timePeriod": time_period}
-                if min_size > 0:
-                    query_data["minEventSize"] = str(min_size)
-
-                built_query = urlencode(query_data)
-                target_url = urlunparse(
-                    (base_parsed.scheme, base_parsed.netloc, base_path, "", built_query, "")
-                )
-
-                if target_url == commander_url:
-                    continue
-
-                print(f"   -> Trying timePeriod={time_period}, minEventSize={min_size}...")
-                urls = self.get_topdeck_urls(page, target_url)
-
-                if len(urls) >= 30:
-                    print(f"   -> Found {len(urls)} decks. Target reached!")
-                    final_query_used = target_url
-                    break
-                print(f"   -> Found only {len(urls)} decks. Expanding search criteria...")
-
-            if len(urls) < 30 and not final_query_used:
-                fallback_url = urlunparse(
-                    (
-                        base_parsed.scheme,
-                        base_parsed.netloc,
-                        base_path,
-                        "",
-                        urlencode({"timePeriod": "ALL_TIME", "minEventSize": "0"}),
-                        "",
-                    )
-                )
-                urls = self.get_topdeck_urls(page, fallback_url)
-                final_query_used = fallback_url
-                print(f"   -> Expanded to maximum range. Collected {len(urls)} total decks.")
-
-            if final_query_used and final_query_used != commander_url:
-                self._update_config_url(commander_url, final_query_used)
-                print("   -> Successfully updated config file with new URL parameters.")
-
-        if not urls:
-            print("No lists found!")
+        urls, valid_decks = self._select_recent_decks(page, commander_url)
+        if not valid_decks:
+            print(f"\nNo valid decklists could be processed for {commander_name}.")
             return
-
-        print(f"Scraping {len(urls)} tournament decklists...")
 
         raw_card_counter = Counter()
         card_counter = Counter()
@@ -477,17 +438,9 @@ class MTGDeckScanner:
         total_basics = {
             "mountain": 0, "forest": 0, "plains": 0, "island": 0, "swamp": 0, "wastes": 0,
         }
-        valid_deck_count = 0
+        valid_deck_count = len(valid_decks)
 
-        for i, url in enumerate(urls, 1):
-            print(f"   -> Processing deck {i}/{len(urls)}...", end="\r", flush=True)
-            cards, b_counts = self.deck_scraper.scrape_deck_data(page, url)
-
-            if not cards and sum(b_counts.values()) == 0:
-                self._debug(f"   -> [DEBUG] Deck {i} failed to copy or was empty.")
-                continue
-
-            valid_deck_count += 1
+        for cards, b_counts in valid_decks:
             raw_card_counter.update(cards)
             deck_card_lists.append(cards)
             deck_basic_counts.append(b_counts)
@@ -506,11 +459,6 @@ class MTGDeckScanner:
 
             for k in total_basics:
                 total_basics[k] += b_counts.get(k, 0)
-
-        print()
-        if valid_deck_count == 0:
-            print(f"\nNo valid decklists could be processed for {commander_name}.")
-            return
 
         print(f"Using {valid_deck_count} of {len(urls)} decklists for land averages.")
 
@@ -570,12 +518,15 @@ class MTGDeckScanner:
             + sum(card in nonbasic_land_cards for card in cards)
             for cards, basic_counts in zip(deck_card_lists, deck_basic_counts)
         ]
-        dynamic_min_lands = round(median(deck_land_counts))
+        median_lands = round(median(deck_land_counts))
+        # A bounded median is a pragmatic compromise, not a proven mana-base model.
+        # Revisit with bracket-appropriate mana sources and modal land/spell usage.
+        target_total_lands = max(27, min(31, median_lands))
         dynamic_min_instants = round(total_instants_all_decks / valid_deck_count)
         dynamic_max_instants = dynamic_min_instants + 2
 
         print(
-            f"Targeting: {dynamic_min_lands} Median Lands | "
+            f"Targeting: {target_total_lands} Lands (source median: {median_lands}) | "
             f"{dynamic_min_instants}-{dynamic_max_instants} Instants"
         )
 
@@ -602,7 +553,6 @@ class MTGDeckScanner:
         else:
             max_gc = 100
 
-        target_total_lands = dynamic_min_lands
         target_non_basics = max(0, target_total_lands - total_avg_basics)
         target_spells = 99 - target_total_lands
 
@@ -644,8 +594,8 @@ class MTGDeckScanner:
             if added_non_basics >= target_non_basics and added_spells >= target_spells:
                 break
 
-        # Pass 2: Fallback spell pool (>= 5%) if Bracket exclusions left spell slots open
-        if added_spells < target_spells:
+        # Prefer spells appearing in at least 5% of decks, then use rarer eligible spells.
+        for minimum_frequency in (0.05, 0):
             for card, count in card_counter.most_common():
                 if added_spells >= target_spells:
                     break
@@ -657,7 +607,7 @@ class MTGDeckScanner:
                 ):
                     continue
 
-                if (count / valid_deck_count) >= 0.05:
+                if (count / valid_deck_count) >= minimum_frequency:
                     scry_data = self.get_scryfall_data(card)
                     if not self._is_card_allowed(
                         card, scry_data, commander_name, bracket, gc_count, max_gc, verbose=False
@@ -803,11 +753,11 @@ class MTGDeckScanner:
                 current_count += 1
                 print(f"   -> Added '{card}' (Instant) to meet dynamic average.")
 
-        # Pass 5: Ensure minimum median land slots remain available
+        # Pass 5: Ensure the target land slots remain available
         current_lands = len(deck_list["Land"])
         slots_remaining = 100 - current_count
-        if (current_lands + slots_remaining) < dynamic_min_lands:
-            deficit = dynamic_min_lands - (current_lands + slots_remaining)
+        if (current_lands + slots_remaining) < target_total_lands:
+            deficit = target_total_lands - (current_lands + slots_remaining)
             cards_removed = 0
             for card in reversed(high_consensus_pool):
                 if cards_removed >= deficit:
@@ -831,7 +781,7 @@ class MTGDeckScanner:
                         cards_removed += 1
                         if is_gc:
                             gc_count = max(0, gc_count - 1)
-                        print(f"   -> Cut '{card}' for required average Lands.")
+                        print(f"   -> Cut '{card}' for required land target.")
                         break
 
         # =====================================================================
@@ -843,9 +793,10 @@ class MTGDeckScanner:
         if not basic_types_to_use:
             basic_types_to_use = ["Forest", "Island", "Swamp", "Mountain", "Plains", "Wastes"]
 
+        land_slots = min(slots_remaining, max(0, target_total_lands - current_lands))
         for basic_name in basic_types_to_use:
-            if avg_basics.get(basic_name, 0) > 0 and slots_remaining > 0:
-                allocated = min(avg_basics[basic_name], slots_remaining)
+            if avg_basics.get(basic_name, 0) > 0 and land_slots > 0:
+                allocated = min(avg_basics[basic_name], land_slots)
 
                 found_existing = False
                 for i, entry in enumerate(deck_list["Land"]):
@@ -858,13 +809,15 @@ class MTGDeckScanner:
                     deck_list["Land"].append(f"{allocated} {basic_name}")
 
                 slots_remaining -= allocated
+                land_slots -= allocated
 
-        if slots_remaining > 0:
+        if land_slots > 0:
             distribution = {b: 0 for b in basic_types_to_use}
             idx = 0
-            while slots_remaining > 0:
+            while land_slots > 0:
                 distribution[basic_types_to_use[idx % len(basic_types_to_use)]] += 1
                 slots_remaining -= 1
+                land_slots -= 1
                 idx += 1
 
             for basic_name, count in distribution.items():
@@ -924,7 +877,7 @@ class MTGDeckScanner:
 
                 if not is_fetch and not has_subtype:
                     for _ in range(count):
-                        replaceable_lands.append(land_entry)
+                        replaceable_lands.append(land_name)
 
             replaceable_lands.reverse()
 
@@ -932,10 +885,11 @@ class MTGDeckScanner:
                 while def_val > 0 and replaceable_lands:
                     to_cut = replaceable_lands.pop(0)
                     for i, entry in enumerate(deck_list["Land"]):
-                        if entry == to_cut:
-                            old_count = int(entry.split(" ", 1)[0])
+                        count_text, entry_name = entry.split(" ", 1)
+                        if entry_name == to_cut:
+                            old_count = int(count_text)
                             if old_count > 1:
-                                deck_list["Land"][i] = f"{old_count - 1} {to_cut.split(' ', 1)[1]}"
+                                deck_list["Land"][i] = f"{old_count - 1} {to_cut}"
                             else:
                                 deck_list["Land"].pop(i)
                             break
@@ -951,7 +905,7 @@ class MTGDeckScanner:
                         deck_list["Land"].append(f"1 {ft}")
 
                     print(
-                        f"   -> Cut '{to_cut.split(' ', 1)[1]}' (Utility Land) for Basic '{ft}' "
+                        f"   -> Cut '{to_cut}' (Utility Land) for Basic '{ft}' "
                         f"to meet fetchable subtype targets."
                     )
                     def_val -= 1
@@ -967,6 +921,14 @@ class MTGDeckScanner:
             final_land_counts[land_name] += count
 
         deck_list["Land"] = [f"{count} {name}" for name, count in final_land_counts.items()]
+
+        total_cards = sum(int(entry.split(" ", 1)[0]) for entries in deck_list.values() for entry in entries)
+        land_count = sum(final_land_counts.values())
+        if total_cards != 100 or not 27 <= land_count <= 31:
+            print(
+                f"Warning: Could not build a complete deck within the land range: "
+                f"{total_cards} cards, {land_count} lands."
+            )
 
         print(f"\n\n### {commander_name} Meta Optimized Decklist")
         new_cards = self._find_new_cards(f"{commander_name}|{bracket}", deck_list)
