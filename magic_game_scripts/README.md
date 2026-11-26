@@ -47,6 +47,30 @@ run saves the final list per commander and bracket in
 the previous run (nothing is shown on the first run). The companion
 `mtg_deck_scraper.py` is used by the scanner and is not a standalone CLI.
 
+## Moxfield deck downloader
+
+List your decks in `magic_game_scripts\moxfield_cache\moxfield_decks.yaml`
+(created empty on first run); `name` is optional and sets the output filename:
+
+```yaml
+decks:
+  - url: "https://moxfield.com/decks/lDLqRbLGGEO9qK4Pd6CWsw"
+    name: winota
+  - "https://moxfield.com/decks/another_id"
+```
+
+```powershell
+python .\magic_game_scripts\moxfield_deck_downloader.py
+python .\magic_game_scripts\moxfield_deck_downloader.py --maybeboard
+```
+
+Each deck is saved as a plain decklist in `moxfield_cache\decks\<name>.txt`
+(commander first) in Moxfield's export format, keeping the printing and finish:
+`1 Command Tower (SLD) 7030 *F*` (`*F*` foil, `*E*` etched, no marker for
+non-foil). `review_mighty_meeply.py` can import these files; it currently reads
+only the card name. The script calls
+Moxfield's JSON API with a browser User-Agent; no browser is needed.
+
 ## Price dip detector
 
 ```powershell

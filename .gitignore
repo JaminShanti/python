@@ -15,6 +15,7 @@ __pycache__/
 /magic_game_scripts/mtg_cache/
 /magic_game_scripts/mtg_scanner_cache/
 /magic_game_scripts/meeple_cache/
+/magic_game_scripts/moxfield_cache/
 /magic_game_scripts/mtg_dip_output/*
 !/magic_game_scripts/mtg_dip_output/MTG_Dips_2026-07-25_15-22.pdf
 !/magic_game_scripts/mtg_dip_output/MTG_Dips_2026-07-25_15-22.png
